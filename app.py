@@ -428,7 +428,6 @@ def format_metric_with_delta(current, previous, is_currency=False):
     delta_str = f"{delta:+.1f}%" if delta is not None else None
     return value_str, delta_str
 
-
 # ═══════════════════════════════════════════════════════════
 # 📈 트렌드 데이터 처리
 # ═══════════════════════════════════════════════════════════
@@ -534,84 +533,6 @@ def build_trend_data(data_df: pd.DataFrame, campaigns_df: pd.DataFrame,
     return grouped.sort_values("_sort")
 
 
-# ═══════════════════════════════════════════════════════════
-# 📈 트렌드 차트
-# ═══════════════════════════════════════════════════════════
-st.subheader("📊 트렌드 (최근 6개월)")
-    
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-    
-# X축 모드 토글
-x_mode_label = st.radio(
-        "X축 단위",
-        ["월별", "순별 (상/중/하순)"],
-        horizontal=True,
-        key="trend_x_mode",
-    )
-x_mode = "month" if x_mode_label == "월별" else "section"
-    
-    # 최근 6개월 계산
-recent_months = get_recent_months(year, month, n=6)
-    
-    # 트렌드 데이터 생성
-trend_df = build_trend_data(
-        data_df, campaigns_df, recent_months,
-        group_filter=selected_group,
-        campaign_filter=selected_campaign_id,
-        x_mode=x_mode,
-    )
-    
-if trend_df.empty:
-        st.info("최근 6개월간 트렌드 데이터가 없습니다.")
-else:
-        # 정렬된 X축 순서 확보
-        x_order = trend_df.drop_duplicates("_x").sort_values("_sort")["_x"].tolist()
-        
-        # 그룹별 라인 (또는 필터된 단일 계열)
-        groups_in_data = trend_df["그룹"].unique().tolist()
-        
-        # ─── 차트 1: 비용 트렌드 ───
-        fig_cost = go.Figure()
-        for g in groups_in_data:
-            gdf = trend_df[trend_df["그룹"] == g]
-            fig_cost.add_trace(go.Scatter(
-                x=gdf["_x"],
-                y=gdf["비용"],
-                mode="lines+markers",
-                name=g,
-                hovertemplate="<b>%{x}</b><br>" + g + ": ₩%{y:,.0f}<extra></extra>",
-            ))
-        fig_cost.update_layout(
-            title="💰 비용 추이",
-            xaxis_title="",
-            yaxis_title="비용 (₩)",
-            hovermode="x unified",
-            height=350,
-            xaxis={"categoryorder": "array", "categoryarray": x_order},
-        )
-        st.plotly_chart(fig_cost, use_container_width=True)
-        
-        # ─── 차트 2: 전환수 트렌드 ───
-        fig_conv = go.Figure()
-        for g in groups_in_data:
-            gdf = trend_df[trend_df["그룹"] == g]
-            fig_conv.add_trace(go.Scatter(
-                x=gdf["_x"],
-                y=gdf["전환수"],
-                mode="lines+markers",
-                name=g,
-                hovertemplate="<b>%{x}</b><br>" + g + ": %{y:,.0f}건<extra></extra>",
-            ))
-        fig_conv.update_layout(
-            title="🎯 전환수 추이",
-            xaxis_title="",
-            yaxis_title="전환수",
-            hovermode="x unified",
-            height=350,
-            xaxis={"categoryorder": "array", "categoryarray": x_order},
-        )
-        st.plotly_chart(fig_conv, use_container_width=True)
 
 # ─────────────────────────────────
 # 사이드바
