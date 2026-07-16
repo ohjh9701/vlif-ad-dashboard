@@ -55,24 +55,21 @@ def load_users():
 def verify_login(user_id: str, password: str):
     """
     아이디/비밀번호 검증.
-    반환값: (성공 여부, 사용자 이름 또는 에러 메시지)
+    반환값: (성공 여부, 사용자 이름 또는 에러 메시지, 권한)
     """
     users_df = load_users()
     if users_df.empty:
-        return False, "등록된 사용자가 없습니다."
-    
-    # 아이디 매칭
+        return False, "등록된 사용자가 없습니다.", None
+
     matched = users_df[users_df["아이디"] == user_id]
     if matched.empty:
-        return False, "아이디 또는 비밀번호가 올바르지 않습니다."
-    
+        return False, "아이디 또는 비밀번호가 올바르지 않습니다.", None
+
     row = matched.iloc[0]
-    
-    # 활성 상태 확인
+
     if str(row.get("활성", "")).upper() != "TRUE":
-        return False, "비활성화된 계정입니다."
-    
-    # 비밀번호 해시 검증
+        return False, "비활성화된 계정입니다.", None
+
     stored_hash = row["비밀번호해시"]
     try:
         is_valid = bcrypt.checkpw(
@@ -80,12 +77,17 @@ def verify_login(user_id: str, password: str):
             stored_hash.encode("utf-8"),
         )
     except Exception:
-        return False, "비밀번호 검증 오류가 발생했습니다."
-    
+        return False, "비밀번호 검증 오류가 발생했습니다.", None
+
     if not is_valid:
-        return False, "아이디 또는 비밀번호가 올바르지 않습니다."
-    
-    return True, row.get("이름", user_id)
+        return False, "아이디 또는 비밀번호가 올바르지 않습니다.", None
+
+    # 권한 정보 함께 반환
+    role = str(row.get("권한", "guest")).lower().strip()
+    if role not in ["admin", "guest"]:
+        role = "guest"  # 알 수 없는 권한은 최소 권한으로 다운그레이드
+
+    return True, row.get("이름", user_id), role
 
 
 def is_logged_in():
@@ -123,27 +125,27 @@ def show_login_page():
             submitted = st.form_submit_button("로그인", type="primary", use_container_width=True)
             
             if submitted:
-                if not user_id or not password:
-                    st.error("아이디와 비밀번호를 모두 입력해주세요.")
-                else:
-                    with st.spinner("로그인 중..."):
-                        success, message = verify_login(user_id, password)
-                    
-                    if success:
-                        st.session_state.logged_in = True
-                        st.session_state.user_id = user_id
-                        st.session_state.user_name = message
-                        st.session_state.login_time = datetime.now()
-                        st.rerun()
-                    else:
-                        st.error(message)
+                 if not user_id or not password:
+                        st.error("아이디와 비밀번호를 모두 입력해주세요.")
+                 else:
+                     with st.spinner("로그인 중..."):
+                            success, message, role = verify_login(user_id, password)
+
+                     if success:
+                            st.session_state.logged_in = True
+                            st.session_state.user_id = user_id
+                            st.session_state.user_name = message
+                            st.session_state.user_role = role  # 권한 저장
+                            st.session_state.login_time = datetime.now()
+                            st.rerun()
+                     else:
+                            st.error(message)
         
         st.caption("💡 계정이 필요하시면 관리자에게 문의하세요.")
 
 
 def logout():
-    """로그아웃 처리."""
-    for key in ["logged_in", "user_id", "user_name", "login_time"]:
+    for key in ["logged_in", "user_id", "user_name", "user_role", "login_time"]:
         if key in st.session_state:
             del st.session_state[key]
     st.rerun()
@@ -379,17 +381,29 @@ def format_metric_with_delta(current, previous, is_currency=False):
 # ─────────────────────────────────
 with st.sidebar:
     st.success(f"👤 **{st.session_state.user_name}** 님")
+    
+    # 권한 표시
+    role = st.session_state.get("user_role", "guest")
+    role_label = "🛡️ 관리자" if role == "admin" else "👁️ 게스트"
+    st.caption(role_label)
     st.caption(f"로그인: {st.session_state.login_time.strftime('%Y-%m-%d %H:%M')}")
+    
     if st.button("🚪 로그아웃", use_container_width=True):
         logout()
     st.divider()
 
-    page = st.radio("메뉴", [
-        "📊 대시보드",
-        "➕ 데이터 입력",
-        "🎯 캠페인 관리",
-        "💬 코멘트 관리",
-    ])
+    # 권한별 메뉴 필터링
+    if role == "admin":
+        menu_options = [
+            "📊 대시보드",
+            "➕ 데이터 입력",
+            "🎯 캠페인 관리",
+            "💬 코멘트 관리",
+        ]
+    else:  # guest
+        menu_options = ["📊 대시보드"]
+
+    page = st.radio("메뉴", menu_options)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -591,6 +605,11 @@ if page == "📊 대시보드":
 # ➕ 데이터 입력
 # ═══════════════════════════════════════════════════════════
 elif page == "➕ 데이터 입력":
+    # 권한 체크
+    if st.session_state.get("user_role") != "admin":
+        st.error("🚫 이 페이지에 접근할 권한이 없습니다.")
+        st.stop()
+
     st.header("➕ 캠페인 데이터 입력")
 
     try:
@@ -700,6 +719,10 @@ elif page == "➕ 데이터 입력":
 # 🎯 캠페인 관리
 # ═══════════════════════════════════════════════════════════
 elif page == "🎯 캠페인 관리":
+    if st.session_state.get("user_role") != "admin":
+        st.error("🚫 이 페이지에 접근할 권한이 없습니다.")
+        st.stop()
+
     st.header("🎯 캠페인 관리")
 
     try:
@@ -769,6 +792,10 @@ elif page == "🎯 캠페인 관리":
 # 💬 코멘트 관리
 # ═══════════════════════════════════════════════════════════
 elif page == "💬 코멘트 관리":
+    if st.session_state.get("user_role") != "admin":
+        st.error("🚫 이 페이지에 접근할 권한이 없습니다.")
+        st.stop()
+        
     st.header("💬 기간 코멘트 관리")
 
     try:
