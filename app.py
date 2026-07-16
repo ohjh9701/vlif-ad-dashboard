@@ -1,3 +1,8 @@
+"""
+빌리프 광고 대시보드
+날짜 형식 표준: '2026. 7. 1' (마지막 마침표 없음)
+"""
+
 import streamlit as st
 import gspread
 import pandas as pd
@@ -5,6 +10,7 @@ from google.oauth2.service_account import Credentials
 from datetime import date, datetime, timedelta
 import calendar
 import bcrypt
+import re
 
 # ─────────────────────────────────
 # 페이지 설정
@@ -18,9 +24,45 @@ st.set_page_config(
 SHEET_URL = "https://docs.google.com/spreadsheets/d/11CyqrC-4VIwxaiTzJBJjfyxWb8ARlbjBmfAVIZd3KNU/edit"
 
 
-# ─────────────────────────────────
-# 구글 시트 클라이언트 (인증 후에만 실제 사용)
-# ─────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# 📅 날짜 처리 유틸 (신규)
+# ═══════════════════════════════════════════════════════════
+
+DATE_PATTERN = re.compile(r'^\s*(\d{4})\s*\.\s*(\d{1,2})\s*\.\s*(\d{1,2})\s*\.?\s*$')
+
+
+def parse_date(s):
+    """
+    '2026. 7. 1' 또는 '2026. 7. 1.' 형식 문자열을 date 객체로 파싱.
+    실패 시 None 반환.
+    """
+    if s is None:
+        return None
+    if isinstance(s, date):
+        return s
+    if pd.isna(s):
+        return None
+    match = DATE_PATTERN.match(str(s))
+    if not match:
+        return None
+    year, month, day = map(int, match.groups())
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def format_date(d):
+    """date 객체를 '2026. 7. 1' 형식 문자열로 변환."""
+    if d is None:
+        return ""
+    return f"{d.year}. {d.month}. {d.day}"
+
+
+# ═══════════════════════════════════════════════════════════
+# 구글 시트 클라이언트
+# ═══════════════════════════════════════════════════════════
+
 @st.cache_resource
 def get_gspread_client():
     credentials = Credentials.from_service_account_info(
@@ -41,22 +83,16 @@ def get_worksheet(sheet_name: str):
 # 🔐 로그인 시스템
 # ═══════════════════════════════════════════════════════════
 
-# 세션 유지 시간 (24시간)
 SESSION_HOURS = 24
 
 
-@st.cache_data(ttl=30)  # 30초 캐시 (계정 추가 반영 빠르게)
+@st.cache_data(ttl=30)
 def load_users():
-    """users 시트에서 사용자 목록 로드."""
     df = pd.DataFrame(get_worksheet("users").get_all_records())
     return df
 
 
 def verify_login(user_id: str, password: str):
-    """
-    아이디/비밀번호 검증.
-    반환값: (성공 여부, 사용자 이름 또는 에러 메시지, 권한)
-    """
     users_df = load_users()
     if users_df.empty:
         return False, "등록된 사용자가 없습니다.", None
@@ -82,65 +118,59 @@ def verify_login(user_id: str, password: str):
     if not is_valid:
         return False, "아이디 또는 비밀번호가 올바르지 않습니다.", None
 
-    # 권한 정보 함께 반환
     role = str(row.get("권한", "guest")).lower().strip()
     if role not in ["admin", "guest"]:
-        role = "guest"  # 알 수 없는 권한은 최소 권한으로 다운그레이드
+        role = "guest"
 
     return True, row.get("이름", user_id), role
 
 
 def is_logged_in():
-    """세션 상태 확인."""
     if "logged_in" not in st.session_state:
         return False
     if not st.session_state.get("logged_in"):
         return False
-    
-    # 세션 만료 체크
+
     login_time = st.session_state.get("login_time")
     if login_time:
         elapsed = datetime.now() - login_time
         if elapsed > timedelta(hours=SESSION_HOURS):
-            # 세션 만료
             st.session_state.logged_in = False
             return False
-    
+
     return True
 
 
 def show_login_page():
-    """로그인 화면."""
-    # 중앙 정렬 위한 컬럼
     _, center, _ = st.columns([1, 2, 1])
-    
+
     with center:
         st.title("🔐 빌리프 광고 대시보드")
         st.caption("로그인이 필요합니다.")
         st.divider()
-        
+
         with st.form("login_form"):
             user_id = st.text_input("아이디", placeholder="아이디 입력")
             password = st.text_input("비밀번호", type="password", placeholder="비밀번호 입력")
             submitted = st.form_submit_button("로그인", type="primary", use_container_width=True)
-            
-            if submitted:
-                 if not user_id or not password:
-                        st.error("아이디와 비밀번호를 모두 입력해주세요.")
-                 else:
-                     with st.spinner("로그인 중..."):
-                            success, message, role = verify_login(user_id, password)
 
-                     if success:
-                            st.session_state.logged_in = True
-                            st.session_state.user_id = user_id
-                            st.session_state.user_name = message
-                            st.session_state.user_role = role  # 권한 저장
-                            st.session_state.login_time = datetime.now()
-                            st.rerun()
-                     else:
-                            st.error(message)
-        
+            if submitted:
+                if not user_id or not password:
+                    st.error("아이디와 비밀번호를 모두 입력해주세요.")
+                else:
+                    with st.spinner("로그인 중..."):
+                        success, message, role = verify_login(user_id, password)
+
+                    if success:
+                        st.session_state.logged_in = True
+                        st.session_state.user_id = user_id
+                        st.session_state.user_name = message
+                        st.session_state.user_role = role
+                        st.session_state.login_time = datetime.now()
+                        st.rerun()
+                    else:
+                        st.error(message)
+
         st.caption("💡 계정이 필요하시면 관리자에게 문의하세요.")
 
 
@@ -151,16 +181,14 @@ def logout():
     st.rerun()
 
 
-# ═══════════════════════════════════════════════════════════
-# 🔒 로그인 체크 - 미로그인 시 로그인 페이지만 표시
-# ═══════════════════════════════════════════════════════════
+# 로그인 체크
 if not is_logged_in():
     show_login_page()
-    st.stop()  # 이 아래 코드는 실행되지 않음
+    st.stop()
 
 
 # ═══════════════════════════════════════════════════════════
-# 이하 로그인 성공한 사용자만 접근 가능
+# 이하 로그인 성공한 사용자만 접근
 # ═══════════════════════════════════════════════════════════
 
 st.title("📊 빌리프 광고 대시보드")
@@ -184,14 +212,23 @@ def load_data():
         for col in ["노출수", "클릭수", "전환수", "비용"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
+        # 날짜 컬럼을 date 객체로 파싱 (신규)
+        for col in ["날짜시작", "날짜끝"]:
+            if col in df.columns:
+                df[f"{col}_dt"] = df[col].apply(parse_date)
     return df
 
 
 @st.cache_data(ttl=60)
 def load_group_metrics():
     df = pd.DataFrame(get_worksheet("group_metrics").get_all_records())
-    if not df.empty and "지표값" in df.columns:
-        df["지표값"] = pd.to_numeric(df["지표값"], errors="coerce")
+    if not df.empty:
+        if "지표값" in df.columns:
+            df["지표값"] = pd.to_numeric(df["지표값"], errors="coerce")
+        # 날짜 파싱
+        for col in ["날짜시작", "날짜끝"]:
+            if col in df.columns:
+                df[f"{col}_dt"] = df[col].apply(parse_date)
     return df
 
 
@@ -289,19 +326,21 @@ def append_comment(row):
     ])
 
 
-# ─────────────────────────────────
-# 기간 유틸
-# ─────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# 📅 기간 유틸 (날짜 처리 개편)
+# ═══════════════════════════════════════════════════════════
+
 def get_period_range(year, month, section):
+    """월/순 → (시작 date, 끝 date) 반환. date 객체로 반환."""
     last_day = calendar.monthrange(year, month)[1]
     if section == "전체":
-        return f"{month:02d}/01", f"{month:02d}/{last_day:02d}"
+        return date(year, month, 1), date(year, month, last_day)
     elif section == "상순 (1~10일)":
-        return f"{month:02d}/01", f"{month:02d}/10"
+        return date(year, month, 1), date(year, month, 10)
     elif section == "중순 (11~20일)":
-        return f"{month:02d}/11", f"{month:02d}/20"
+        return date(year, month, 11), date(year, month, 20)
     elif section == "하순 (21~월말)":
-        return f"{month:02d}/21", f"{month:02d}/{last_day:02d}"
+        return date(year, month, 21), date(year, month, last_day)
 
 
 def get_previous_period(year, month, section):
@@ -312,42 +351,53 @@ def get_previous_period(year, month, section):
     return prev_year, prev_month, section
 
 
-def _parse_mmdd(s):
-    try:
-        parts = str(s).strip().split("/")
-        if len(parts) != 2:
-            return None, None
-        return int(parts[0]), int(parts[1])
-    except (ValueError, AttributeError):
-        return None, None
-
-
 def filter_data_by_period(data_df, year, month, section):
+    """
+    기간 필터 (date 객체 기반).
+    - '전체': 해당 년/월에 속한 모든 데이터
+    - 상/중/하순: 정확히 매칭되는 행
+    """
     if data_df.empty:
         return data_df.iloc[0:0]
+
     curr_start, curr_end = get_period_range(year, month, section)
+
     if section == "전체":
-        df = data_df.copy()
-        df["_start_month"] = df["날짜시작"].apply(lambda x: _parse_mmdd(x)[0])
-        return df[df["_start_month"] == month].drop(columns=["_start_month"])
-    else:
-        return data_df[
-            (data_df["날짜시작"] == curr_start) & (data_df["날짜끝"] == curr_end)
+        # 날짜시작이 해당 년/월인 행 모두
+        df = data_df[
+            data_df["날짜시작_dt"].apply(
+                lambda d: d is not None and d.year == year and d.month == month
+            )
         ]
+        return df.copy()
+    else:
+        # 정확 매칭
+        df = data_df[
+            (data_df["날짜시작_dt"] == curr_start)
+            & (data_df["날짜끝_dt"] == curr_end)
+        ]
+        return df.copy()
 
 
 def filter_metrics_by_period(metrics_df, year, month, section):
     if metrics_df.empty:
         return metrics_df.iloc[0:0]
+
     curr_start, curr_end = get_period_range(year, month, section)
+
     if section == "전체":
-        df = metrics_df.copy()
-        df["_start_month"] = df["날짜시작"].apply(lambda x: _parse_mmdd(x)[0])
-        return df[df["_start_month"] == month].drop(columns=["_start_month"])
-    else:
-        return metrics_df[
-            (metrics_df["날짜시작"] == curr_start) & (metrics_df["날짜끝"] == curr_end)
+        df = metrics_df[
+            metrics_df["날짜시작_dt"].apply(
+                lambda d: d is not None and d.year == year and d.month == month
+            )
         ]
+        return df.copy()
+    else:
+        df = metrics_df[
+            (metrics_df["날짜시작_dt"] == curr_start)
+            & (metrics_df["날짜끝_dt"] == curr_end)
+        ]
+        return df.copy()
 
 
 def get_section_label(section):
@@ -360,6 +410,9 @@ def get_section_label(section):
     return mapping.get(section, section)
 
 
+# ─────────────────────────────────
+# 지표 계산 유틸
+# ─────────────────────────────────
 def calc_change(current, previous):
     if previous == 0 or pd.isna(previous):
         return None
@@ -377,22 +430,20 @@ def format_metric_with_delta(current, previous, is_currency=False):
 
 
 # ─────────────────────────────────
-# 사이드바 (로그인 사용자 정보 + 로그아웃)
+# 사이드바
 # ─────────────────────────────────
 with st.sidebar:
     st.success(f"👤 **{st.session_state.user_name}** 님")
-    
-    # 권한 표시
+
     role = st.session_state.get("user_role", "guest")
     role_label = "🛡️ 관리자" if role == "admin" else "👁️ 게스트"
     st.caption(role_label)
     st.caption(f"로그인: {st.session_state.login_time.strftime('%Y-%m-%d %H:%M')}")
-    
+
     if st.button("🚪 로그아웃", use_container_width=True):
         logout()
     st.divider()
 
-    # 권한별 메뉴 필터링
     if role == "admin":
         menu_options = [
             "📊 대시보드",
@@ -400,7 +451,7 @@ with st.sidebar:
             "🎯 캠페인 관리",
             "💬 코멘트 관리",
         ]
-    else:  # guest
+    else:
         menu_options = ["📊 대시보드"]
 
     page = st.radio("메뉴", menu_options)
@@ -457,8 +508,8 @@ if page == "📊 대시보드":
     prev_year, prev_month, prev_section = get_previous_period(year, month, section)
     prev_start, prev_end = get_period_range(prev_year, prev_month, prev_section)
 
-    filter_desc = f"**현재**: {year}년 {curr_start} ~ {curr_end}"
-    filter_desc += f"  |  **비교**: {prev_year}년 {prev_start} ~ {prev_end}"
+    filter_desc = f"**현재**: {format_date(curr_start)} ~ {format_date(curr_end)}"
+    filter_desc += f"  |  **비교**: {format_date(prev_start)} ~ {format_date(prev_end)}"
     if selected_group != "전체":
         filter_desc += f"  |  **그룹**: {selected_group}"
     if selected_campaign_id:
@@ -504,7 +555,7 @@ if page == "📊 대시보드":
                 st.markdown(f"**{row['작성자']}** · _{row['작성일시']}_")
                 st.write(row["코멘트"])
     else:
-        st.info("이 기간에 대한 코멘트가 아직 없습니다. 💬 코멘트 관리에서 작성할 수 있습니다.")
+        st.info("이 기간에 대한 코멘트가 아직 없습니다.")
 
     st.subheader("📋 요약 (전월 동일 기간 대비)")
     curr_totals = {
@@ -558,8 +609,12 @@ if page == "📊 대시보드":
             비용=("비용", "sum"),
         ).reset_index()
         if not group_summary.empty:
-            group_summary["CTR(%)"] = (group_summary["클릭수"] / group_summary["노출수"] * 100).round(2)
-            group_summary["CPC"] = (group_summary["비용"] / group_summary["클릭수"]).round(0).astype("Int64")
+            group_summary["CTR(%)"] = (
+                group_summary["클릭수"] / group_summary["노출수"] * 100
+            ).round(2)
+            group_summary["CPC"] = (
+                group_summary["비용"] / group_summary["클릭수"]
+            ).round(0).astype("Int64")
             st.dataframe(group_summary, use_container_width=True)
 
     st.subheader("🔍 캠페인별 상세")
@@ -577,8 +632,12 @@ if page == "📊 대시보드":
                 비용=("비용", "sum"),
             ).reset_index()
 
-        campaign_detail["CTR(%)"] = (campaign_detail["클릭수"] / campaign_detail["노출수"] * 100).round(2)
-        campaign_detail["CPC"] = (campaign_detail["비용"] / campaign_detail["클릭수"]).round(0).astype("Int64")
+        campaign_detail["CTR(%)"] = (
+            campaign_detail["클릭수"] / campaign_detail["노출수"] * 100
+        ).round(2)
+        campaign_detail["CPC"] = (
+            campaign_detail["비용"] / campaign_detail["클릭수"]
+        ).round(0).astype("Int64")
 
         display_cols = ["그룹", "캠페인명", "노출수", "클릭수", "전환수", "비용", "CTR(%)", "CPC"]
         st.dataframe(
@@ -605,7 +664,6 @@ if page == "📊 대시보드":
 # ➕ 데이터 입력
 # ═══════════════════════════════════════════════════════════
 elif page == "➕ 데이터 입력":
-    # 권한 체크
     if st.session_state.get("user_role") != "admin":
         st.error("🚫 이 페이지에 접근할 권한이 없습니다.")
         st.stop()
@@ -660,8 +718,8 @@ elif page == "➕ 데이터 입력":
                 if submitted:
                     try:
                         append_data_row({
-                            "날짜시작": d_start.strftime("%m/%d"),
-                            "날짜끝": d_end.strftime("%m/%d"),
+                            "날짜시작": format_date(d_start),  # 새 형식
+                            "날짜끝": format_date(d_end),      # 새 형식
                             "캠페인ID": selected_id,
                             "노출수": impressions,
                             "클릭수": clicks,
@@ -703,8 +761,8 @@ elif page == "➕ 데이터 입력":
                         try:
                             for m, v in metric_values.items():
                                 append_group_metric({
-                                    "날짜시작": m_start.strftime("%m/%d"),
-                                    "날짜끝": m_end.strftime("%m/%d"),
+                                    "날짜시작": format_date(m_start),  # 새 형식
+                                    "날짜끝": format_date(m_end),      # 새 형식
                                     "그룹": selected_group_m,
                                     "지표종류": m,
                                     "지표값": v,
@@ -795,7 +853,7 @@ elif page == "💬 코멘트 관리":
     if st.session_state.get("user_role") != "admin":
         st.error("🚫 이 페이지에 접근할 권한이 없습니다.")
         st.stop()
-        
+
     st.header("💬 기간 코멘트 관리")
 
     try:
@@ -835,7 +893,6 @@ elif page == "💬 코멘트 관리":
             st.warning(f"⚠️ 이 기간에 이미 {len(existing)}개의 코멘트가 있습니다.")
 
         with st.form("form_comment", clear_on_submit=True):
-            # 작성자는 로그인한 사용자 이름으로 자동 채움
             author = st.text_input("작성자", value=st.session_state.user_name)
             comment_text = st.text_area(
                 "코멘트 내용",
