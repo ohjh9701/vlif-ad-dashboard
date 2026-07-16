@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta
 import calendar
 import bcrypt
 import re
+import plotly.graph_objects as go
 
 # ─────────────────────────────────
 # 페이지 설정
@@ -25,17 +26,13 @@ SHEET_URL = "https://docs.google.com/spreadsheets/d/11CyqrC-4VIwxaiTzJBJjfyxWb8A
 
 
 # ═══════════════════════════════════════════════════════════
-# 📅 날짜 처리 유틸 (신규)
+# 📅 날짜 처리 유틸
 # ═══════════════════════════════════════════════════════════
 
 DATE_PATTERN = re.compile(r'^\s*(\d{4})\s*\.\s*(\d{1,2})\s*\.\s*(\d{1,2})\s*\.?\s*$')
 
 
 def parse_date(s):
-    """
-    '2026. 7. 1' 또는 '2026. 7. 1.' 형식 문자열을 date 객체로 파싱.
-    실패 시 None 반환.
-    """
     if s is None:
         return None
     if isinstance(s, date):
@@ -53,7 +50,6 @@ def parse_date(s):
 
 
 def format_date(d):
-    """date 객체를 '2026. 7. 1' 형식 문자열로 변환."""
     if d is None:
         return ""
     return f"{d.year}. {d.month}. {d.day}"
@@ -212,7 +208,6 @@ def load_data():
         for col in ["노출수", "클릭수", "전환수", "비용"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
-        # 날짜 컬럼을 date 객체로 파싱 (신규)
         for col in ["날짜시작", "날짜끝"]:
             if col in df.columns:
                 df[f"{col}_dt"] = df[col].apply(parse_date)
@@ -225,7 +220,6 @@ def load_group_metrics():
     if not df.empty:
         if "지표값" in df.columns:
             df["지표값"] = pd.to_numeric(df["지표값"], errors="coerce")
-        # 날짜 파싱
         for col in ["날짜시작", "날짜끝"]:
             if col in df.columns:
                 df[f"{col}_dt"] = df[col].apply(parse_date)
@@ -327,11 +321,10 @@ def append_comment(row):
 
 
 # ═══════════════════════════════════════════════════════════
-# 📅 기간 유틸 (날짜 처리 개편)
+# 📅 기간 유틸
 # ═══════════════════════════════════════════════════════════
 
 def get_period_range(year, month, section):
-    """월/순 → (시작 date, 끝 date) 반환. date 객체로 반환."""
     last_day = calendar.monthrange(year, month)[1]
     if section == "전체":
         return date(year, month, 1), date(year, month, last_day)
@@ -352,18 +345,12 @@ def get_previous_period(year, month, section):
 
 
 def filter_data_by_period(data_df, year, month, section):
-    """
-    기간 필터 (date 객체 기반).
-    - '전체': 해당 년/월에 속한 모든 데이터
-    - 상/중/하순: 정확히 매칭되는 행
-    """
     if data_df.empty:
         return data_df.iloc[0:0]
 
     curr_start, curr_end = get_period_range(year, month, section)
 
     if section == "전체":
-        # 날짜시작이 해당 년/월인 행 모두
         df = data_df[
             data_df["날짜시작_dt"].apply(
                 lambda d: d is not None and d.year == year and d.month == month
@@ -371,7 +358,6 @@ def filter_data_by_period(data_df, year, month, section):
         ]
         return df.copy()
     else:
-        # 정확 매칭
         df = data_df[
             (data_df["날짜시작_dt"] == curr_start)
             & (data_df["날짜끝_dt"] == curr_end)
@@ -410,6 +396,89 @@ def get_section_label(section):
     return mapping.get(section, section)
 
 
+# ═══════════════════════════════════════════════════════════
+# 📈 트렌드 데이터 처리
+# ═══════════════════════════════════════════════════════════
+
+def get_recent_months(base_year: int, base_month: int, n: int = 6):
+    """기준 년/월에서 과거 n개월 리스트 반환."""
+    months = []
+    y, m = base_year, base_month
+    for _ in range(n):
+        months.append((y, m))
+        m -= 1
+        if m == 0:
+            m = 12
+            y -= 1
+    return list(reversed(months))
+
+
+def _get_section_from_start_day(day: int):
+    if day <= 10:
+        return "상순"
+    elif day <= 20:
+        return "중순"
+    else:
+        return "하순"
+
+
+def build_trend_data(data_df, campaigns_df, months_list,
+                     group_filter=None, campaign_filter=None,
+                     x_mode="month"):
+    """트렌드 차트용 데이터 생성."""
+    if data_df.empty:
+        return pd.DataFrame()
+
+    df = data_df.merge(campaigns_df[["캠페인ID", "그룹"]], on="캠페인ID", how="left")
+
+    if group_filter and group_filter != "전체":
+        df = df[df["그룹"] == group_filter]
+    if campaign_filter:
+        df = df[df["캠페인ID"] == campaign_filter]
+
+    if df.empty:
+        return pd.DataFrame()
+
+    df = df.copy()
+    df["_year"] = df["날짜시작_dt"].apply(lambda d: d.year if d else None)
+    df["_month"] = df["날짜시작_dt"].apply(lambda d: d.month if d else None)
+    df["_day"] = df["날짜시작_dt"].apply(lambda d: d.day if d else None)
+    df["_section"] = df["_day"].apply(
+        lambda x: _get_section_from_start_day(int(x)) if pd.notna(x) else None
+    )
+
+    # 대상 월 필터
+    target_ym = set(months_list)
+    df = df[df.apply(lambda r: (r["_year"], r["_month"]) in target_ym, axis=1)]
+
+    if df.empty:
+        return pd.DataFrame()
+
+    if x_mode == "month":
+        df["_x"] = df.apply(lambda r: f"{int(r['_year'])}. {int(r['_month'])}", axis=1)
+        df["_sort"] = df["_year"] * 100 + df["_month"]
+    else:
+        section_order = {"상순": 1, "중순": 2, "하순": 3}
+        df["_x"] = df.apply(
+            lambda r: f"{int(r['_year'])}. {int(r['_month'])} {r['_section']}",
+            axis=1
+        )
+        df["_sort"] = (
+            df["_year"] * 10000
+            + df["_month"] * 100
+            + df["_section"].map(section_order).fillna(9)
+        )
+
+    grouped = df.groupby(["_sort", "_x", "그룹"]).agg(
+        노출수=("노출수", "sum"),
+        클릭수=("클릭수", "sum"),
+        전환수=("전환수", "sum"),
+        비용=("비용", "sum"),
+    ).reset_index()
+
+    return grouped.sort_values("_sort")
+
+
 # ─────────────────────────────────
 # 지표 계산 유틸
 # ─────────────────────────────────
@@ -427,111 +496,6 @@ def format_metric_with_delta(current, previous, is_currency=False):
     delta = calc_change(current, previous)
     delta_str = f"{delta:+.1f}%" if delta is not None else None
     return value_str, delta_str
-
-# ═══════════════════════════════════════════════════════════
-# 📈 트렌드 데이터 처리
-# ═══════════════════════════════════════════════════════════
-
-def get_recent_months(base_year: int, base_month: int, n: int = 6):
-    """
-    기준 년/월에서 과거 n개월 리스트 반환.
-    예: (2026, 7) → [(2026,2), (2026,3), (2026,4), (2026,5), (2026,6), (2026,7)]
-    """
-    months = []
-    y, m = base_year, base_month
-    for _ in range(n):
-        months.append((y, m))
-        m -= 1
-        if m == 0:
-            m = 12
-            y -= 1
-    return list(reversed(months))
-
-
-def _get_section_from_start_day(day: int):
-    """일자로부터 순 판단."""
-    if day <= 10:
-        return "상순"
-    elif day <= 20:
-        return "중순"
-    else:
-        return "하순"
-
-
-def build_trend_data(data_df: pd.DataFrame, campaigns_df: pd.DataFrame,
-                     months_list, group_filter=None, campaign_filter=None,
-                     x_mode="month"):
-    """
-    트렌드 차트용 데이터 생성.
-    
-    Args:
-        data_df: 전체 광고 성과 데이터
-        campaigns_df: 캠페인 마스터
-        months_list: [(year, month), ...] 조회 대상 월
-        group_filter: 특정 그룹만 필터 (None이면 그룹별 전체)
-        campaign_filter: 특정 캠페인만 필터
-        x_mode: "month" (월별) 또는 "section" (순별)
-    
-    Returns:
-        DataFrame: [x축라벨, 그룹, 노출수, 클릭수, 전환수, 비용]
-    """
-    if data_df.empty:
-        return pd.DataFrame()
-    
-    # 그룹 정보 join
-    df = data_df.merge(campaigns_df[["캠페인ID", "그룹"]], on="캠페인ID", how="left")
-    
-    # 그룹/캠페인 필터
-    if group_filter and group_filter != "전체":
-        df = df[df["그룹"] == group_filter]
-    if campaign_filter:
-        df = df[df["캠페인ID"] == campaign_filter]
-    
-    if df.empty:
-        return pd.DataFrame()
-    
-    # 년/월/순 컬럼 추가
-    df = df.copy()
-    df["_year"] = df["날짜시작_dt"].apply(lambda d: d.year if d else None)
-    df["_month"] = df["날짜시작_dt"].apply(lambda d: d.month if d else None)
-    df["_day"] = df["날짜시작_dt"].apply(lambda d: d.day if d else None)
-    df["_section"] = df["_day"].apply(
-        lambda x: _get_section_from_start_day(int(x)) if pd.notna(x) else None
-    )
-    
-    # 대상 월 필터
-    target_ym = set(months_list)
-    df = df[df.apply(lambda r: (r["_year"], r["_month"]) in target_ym, axis=1)]
-    
-    if df.empty:
-        return pd.DataFrame()
-    
-    # X축 라벨 생성
-    if x_mode == "month":
-        df["_x"] = df.apply(lambda r: f"{int(r['_year'])}. {int(r['_month'])}", axis=1)
-        df["_sort"] = df["_year"] * 100 + df["_month"]
-    else:  # section
-        section_order = {"상순": 1, "중순": 2, "하순": 3}
-        df["_x"] = df.apply(
-            lambda r: f"{int(r['_year'])}. {int(r['_month'])} {r['_section']}",
-            axis=1
-        )
-        df["_sort"] = (
-            df["_year"] * 10000
-            + df["_month"] * 100
-            + df["_section"].map(section_order).fillna(9)
-        )
-    
-    # 집계
-    grouped = df.groupby(["_sort", "_x", "그룹"]).agg(
-        노출수=("노출수", "sum"),
-        클릭수=("클릭수", "sum"),
-        전환수=("전환수", "sum"),
-        비용=("비용", "sum"),
-    ).reset_index()
-    
-    return grouped.sort_values("_sort")
-
 
 
 # ─────────────────────────────────
@@ -701,6 +665,74 @@ if page == "📊 대시보드":
               f"{cpc_delta:+.1f}%" if cpc_delta is not None else None,
               delta_color="inverse")
 
+    # ─────── 📊 트렌드 차트 (최근 6개월) ───────
+    st.subheader("📊 트렌드 (최근 6개월)")
+
+    x_mode_label = st.radio(
+        "X축 단위",
+        ["월별", "순별 (상/중/하순)"],
+        horizontal=True,
+        key="trend_x_mode",
+    )
+    x_mode = "month" if x_mode_label == "월별" else "section"
+
+    recent_months = get_recent_months(year, month, n=6)
+
+    trend_df = build_trend_data(
+        data_df, campaigns_df, recent_months,
+        group_filter=selected_group,
+        campaign_filter=selected_campaign_id,
+        x_mode=x_mode,
+    )
+
+    if trend_df.empty:
+        st.info("최근 6개월간 트렌드 데이터가 없습니다.")
+    else:
+        x_order = trend_df.drop_duplicates("_x").sort_values("_sort")["_x"].tolist()
+        groups_in_data = trend_df["그룹"].unique().tolist()
+
+        # 차트 1: 비용 트렌드
+        fig_cost = go.Figure()
+        for g in groups_in_data:
+            gdf = trend_df[trend_df["그룹"] == g]
+            fig_cost.add_trace(go.Scatter(
+                x=gdf["_x"],
+                y=gdf["비용"],
+                mode="lines+markers",
+                name=g,
+                hovertemplate="<b>%{x}</b><br>" + g + ": ₩%{y:,.0f}<extra></extra>",
+            ))
+        fig_cost.update_layout(
+            title="💰 비용 추이",
+            xaxis_title="",
+            yaxis_title="비용 (₩)",
+            hovermode="x unified",
+            height=350,
+            xaxis={"categoryorder": "array", "categoryarray": x_order},
+        )
+        st.plotly_chart(fig_cost, use_container_width=True)
+
+        # 차트 2: 전환수 트렌드
+        fig_conv = go.Figure()
+        for g in groups_in_data:
+            gdf = trend_df[trend_df["그룹"] == g]
+            fig_conv.add_trace(go.Scatter(
+                x=gdf["_x"],
+                y=gdf["전환수"],
+                mode="lines+markers",
+                name=g,
+                hovertemplate="<b>%{x}</b><br>" + g + ": %{y:,.0f}건<extra></extra>",
+            ))
+        fig_conv.update_layout(
+            title="🎯 전환수 추이",
+            xaxis_title="",
+            yaxis_title="전환수",
+            hovermode="x unified",
+            height=350,
+            xaxis={"categoryorder": "array", "categoryarray": x_order},
+        )
+        st.plotly_chart(fig_conv, use_container_width=True)
+
     if selected_campaign_id is None:
         st.subheader("🎯 그룹별 성과")
         curr_with_group = curr_data.merge(
@@ -793,7 +825,7 @@ elif page == "➕ 데이터 입력":
         st.caption("캠페인을 선택하면 예산·유형·URL은 자동으로 표시됩니다. 성과 데이터만 입력하세요.")
 
         if active_campaigns.empty:
-            st.warning("등록된 활성 캠페인이 없습니다. 먼저 '캠페인 관리'에서 캠페인을 등록해주세요.")
+            st.warning("등록된 활성 캠페인이 없습니다.")
         else:
             campaign_options = {
                 f"[{row['캠페인ID']}] {row['캠페인명']} ({row['그룹']})": row['캠페인ID']
@@ -823,8 +855,8 @@ elif page == "➕ 데이터 입력":
                 if submitted:
                     try:
                         append_data_row({
-                            "날짜시작": format_date(d_start),  # 새 형식
-                            "날짜끝": format_date(d_end),      # 새 형식
+                            "날짜시작": format_date(d_start),
+                            "날짜끝": format_date(d_end),
                             "캠페인ID": selected_id,
                             "노출수": impressions,
                             "클릭수": clicks,
@@ -866,8 +898,8 @@ elif page == "➕ 데이터 입력":
                         try:
                             for m, v in metric_values.items():
                                 append_group_metric({
-                                    "날짜시작": format_date(m_start),  # 새 형식
-                                    "날짜끝": format_date(m_end),      # 새 형식
+                                    "날짜시작": format_date(m_start),
+                                    "날짜끝": format_date(m_end),
                                     "그룹": selected_group_m,
                                     "지표종류": m,
                                     "지표값": v,
