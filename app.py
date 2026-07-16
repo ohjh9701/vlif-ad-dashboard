@@ -2,8 +2,9 @@ import streamlit as st
 import gspread
 import pandas as pd
 from google.oauth2.service_account import Credentials
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import calendar
+import bcrypt
 
 # ─────────────────────────────────
 # 페이지 설정
@@ -14,13 +15,11 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("📊 빌리프 광고 대시보드")
-
 SHEET_URL = "https://docs.google.com/spreadsheets/d/11CyqrC-4VIwxaiTzJBJjfyxWb8ARlbjBmfAVIZd3KNU/edit"
 
 
 # ─────────────────────────────────
-# 구글 시트 클라이언트
+# 구글 시트 클라이언트 (인증 후에만 실제 사용)
 # ─────────────────────────────────
 @st.cache_resource
 def get_gspread_client():
@@ -36,6 +35,133 @@ def get_gspread_client():
 
 def get_worksheet(sheet_name: str):
     return get_gspread_client().open_by_url(SHEET_URL).worksheet(sheet_name)
+
+
+# ═══════════════════════════════════════════════════════════
+# 🔐 로그인 시스템
+# ═══════════════════════════════════════════════════════════
+
+# 세션 유지 시간 (24시간)
+SESSION_HOURS = 24
+
+
+@st.cache_data(ttl=30)  # 30초 캐시 (계정 추가 반영 빠르게)
+def load_users():
+    """users 시트에서 사용자 목록 로드."""
+    df = pd.DataFrame(get_worksheet("users").get_all_records())
+    return df
+
+
+def verify_login(user_id: str, password: str):
+    """
+    아이디/비밀번호 검증.
+    반환값: (성공 여부, 사용자 이름 또는 에러 메시지)
+    """
+    users_df = load_users()
+    if users_df.empty:
+        return False, "등록된 사용자가 없습니다."
+    
+    # 아이디 매칭
+    matched = users_df[users_df["아이디"] == user_id]
+    if matched.empty:
+        return False, "아이디 또는 비밀번호가 올바르지 않습니다."
+    
+    row = matched.iloc[0]
+    
+    # 활성 상태 확인
+    if str(row.get("활성", "")).upper() != "TRUE":
+        return False, "비활성화된 계정입니다."
+    
+    # 비밀번호 해시 검증
+    stored_hash = row["비밀번호해시"]
+    try:
+        is_valid = bcrypt.checkpw(
+            password.encode("utf-8"),
+            stored_hash.encode("utf-8"),
+        )
+    except Exception:
+        return False, "비밀번호 검증 오류가 발생했습니다."
+    
+    if not is_valid:
+        return False, "아이디 또는 비밀번호가 올바르지 않습니다."
+    
+    return True, row.get("이름", user_id)
+
+
+def is_logged_in():
+    """세션 상태 확인."""
+    if "logged_in" not in st.session_state:
+        return False
+    if not st.session_state.get("logged_in"):
+        return False
+    
+    # 세션 만료 체크
+    login_time = st.session_state.get("login_time")
+    if login_time:
+        elapsed = datetime.now() - login_time
+        if elapsed > timedelta(hours=SESSION_HOURS):
+            # 세션 만료
+            st.session_state.logged_in = False
+            return False
+    
+    return True
+
+
+def show_login_page():
+    """로그인 화면."""
+    # 중앙 정렬 위한 컬럼
+    _, center, _ = st.columns([1, 2, 1])
+    
+    with center:
+        st.title("🔐 빌리프 광고 대시보드")
+        st.caption("로그인이 필요합니다.")
+        st.divider()
+        
+        with st.form("login_form"):
+            user_id = st.text_input("아이디", placeholder="아이디 입력")
+            password = st.text_input("비밀번호", type="password", placeholder="비밀번호 입력")
+            submitted = st.form_submit_button("로그인", type="primary", use_container_width=True)
+            
+            if submitted:
+                if not user_id or not password:
+                    st.error("아이디와 비밀번호를 모두 입력해주세요.")
+                else:
+                    with st.spinner("로그인 중..."):
+                        success, message = verify_login(user_id, password)
+                    
+                    if success:
+                        st.session_state.logged_in = True
+                        st.session_state.user_id = user_id
+                        st.session_state.user_name = message
+                        st.session_state.login_time = datetime.now()
+                        st.rerun()
+                    else:
+                        st.error(message)
+        
+        st.caption("💡 계정이 필요하시면 관리자에게 문의하세요.")
+
+
+def logout():
+    """로그아웃 처리."""
+    for key in ["logged_in", "user_id", "user_name", "login_time"]:
+        if key in st.session_state:
+            del st.session_state[key]
+    st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════
+# 🔒 로그인 체크 - 미로그인 시 로그인 페이지만 표시
+# ═══════════════════════════════════════════════════════════
+if not is_logged_in():
+    show_login_page()
+    st.stop()  # 이 아래 코드는 실행되지 않음
+
+
+# ═══════════════════════════════════════════════════════════
+# 이하 로그인 성공한 사용자만 접근 가능
+# ═══════════════════════════════════════════════════════════
+
+st.title("📊 빌리프 광고 대시보드")
 
 
 # ─────────────────────────────────
@@ -122,7 +248,6 @@ def generate_campaign_id(group, campaigns_df, groups_df):
 
 
 def generate_comment_id(comments_df):
-    """CM001 형식으로 자동 생성."""
     if comments_df.empty or "코멘트ID" not in comments_df.columns:
         return "CM001"
     nums = comments_df["코멘트ID"].astype(str).str.replace("CM", "", regex=False)
@@ -224,7 +349,6 @@ def filter_metrics_by_period(metrics_df, year, month, section):
 
 
 def get_section_label(section):
-    """UI에 표시되는 긴 이름을 시트 저장용 짧은 이름으로 변환."""
     mapping = {
         "전체": "전체",
         "상순 (1~10일)": "상순",
@@ -234,20 +358,6 @@ def get_section_label(section):
     return mapping.get(section, section)
 
 
-def section_from_label(label):
-    """시트에 저장된 짧은 이름 → UI 긴 이름."""
-    mapping = {
-        "전체": "전체",
-        "상순": "상순 (1~10일)",
-        "중순": "중순 (11~20일)",
-        "하순": "하순 (21~월말)",
-    }
-    return mapping.get(label, label)
-
-
-# ─────────────────────────────────
-# 지표 계산 유틸
-# ─────────────────────────────────
 def calc_change(current, previous):
     if previous == 0 or pd.isna(previous):
         return None
@@ -265,14 +375,21 @@ def format_metric_with_delta(current, previous, is_currency=False):
 
 
 # ─────────────────────────────────
-# 사이드바
+# 사이드바 (로그인 사용자 정보 + 로그아웃)
 # ─────────────────────────────────
-page = st.sidebar.radio("메뉴", [
-    "📊 대시보드",
-    "➕ 데이터 입력",
-    "🎯 캠페인 관리",
-    "💬 코멘트 관리",
-])
+with st.sidebar:
+    st.success(f"👤 **{st.session_state.user_name}** 님")
+    st.caption(f"로그인: {st.session_state.login_time.strftime('%Y-%m-%d %H:%M')}")
+    if st.button("🚪 로그아웃", use_container_width=True):
+        logout()
+    st.divider()
+
+    page = st.radio("메뉴", [
+        "📊 대시보드",
+        "➕ 데이터 입력",
+        "🎯 캠페인 관리",
+        "💬 코멘트 관리",
+    ])
 
 
 # ═══════════════════════════════════════════════════════════
@@ -288,7 +405,6 @@ if page == "📊 대시보드":
         st.error(f"데이터 로드 실패: {e}")
         st.stop()
 
-    # ─────── 필터 ───────
     st.subheader("🔎 필터")
     today = date.today()
     r1c1, r1c2, r1c3 = st.columns([1, 1, 2])
@@ -323,7 +439,6 @@ if page == "📊 대시보드":
     )
     selected_campaign_id = campaign_options_dict[selected_campaign_label]
 
-    # ─────── 기간 표시 ───────
     curr_start, curr_end = get_period_range(year, month, section)
     prev_year, prev_month, prev_section = get_previous_period(year, month, section)
     prev_start, prev_end = get_period_range(prev_year, prev_month, prev_section)
@@ -336,7 +451,6 @@ if page == "📊 대시보드":
         filter_desc += f"  |  **캠페인**: {selected_campaign_label}"
     st.caption(filter_desc)
 
-    # ─────── 데이터 필터링 ───────
     curr_data = filter_data_by_period(data_df, year, month, section)
     prev_data = filter_data_by_period(data_df, prev_year, prev_month, prev_section)
 
@@ -361,7 +475,6 @@ if page == "📊 대시보드":
         st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
         st.stop()
 
-    # ─────── 코멘트 표시 (현재 기간에 대한 코멘트 자동 로드) ───────
     st.subheader("💬 기간 코멘트")
     section_label = get_section_label(section)
     current_comments = comments_df[
@@ -371,7 +484,6 @@ if page == "📊 대시보드":
     ] if not comments_df.empty else pd.DataFrame()
 
     if not current_comments.empty:
-        # 작성일시 최신순 정렬
         current_comments = current_comments.sort_values("작성일시", ascending=False)
         for _, row in current_comments.iterrows():
             with st.container(border=True):
@@ -380,7 +492,6 @@ if page == "📊 대시보드":
     else:
         st.info("이 기간에 대한 코멘트가 아직 없습니다. 💬 코멘트 관리에서 작성할 수 있습니다.")
 
-    # ─────── 요약 카드 ───────
     st.subheader("📋 요약 (전월 동일 기간 대비)")
     curr_totals = {
         "노출수": curr_data["노출수"].sum(),
@@ -433,12 +544,8 @@ if page == "📊 대시보드":
             비용=("비용", "sum"),
         ).reset_index()
         if not group_summary.empty:
-            group_summary["CTR(%)"] = (
-                group_summary["클릭수"] / group_summary["노출수"] * 100
-            ).round(2)
-            group_summary["CPC"] = (
-                group_summary["비용"] / group_summary["클릭수"]
-            ).round(0).astype("Int64")
+            group_summary["CTR(%)"] = (group_summary["클릭수"] / group_summary["노출수"] * 100).round(2)
+            group_summary["CPC"] = (group_summary["비용"] / group_summary["클릭수"]).round(0).astype("Int64")
             st.dataframe(group_summary, use_container_width=True)
 
     st.subheader("🔍 캠페인별 상세")
@@ -456,12 +563,8 @@ if page == "📊 대시보드":
                 비용=("비용", "sum"),
             ).reset_index()
 
-        campaign_detail["CTR(%)"] = (
-            campaign_detail["클릭수"] / campaign_detail["노출수"] * 100
-        ).round(2)
-        campaign_detail["CPC"] = (
-            campaign_detail["비용"] / campaign_detail["클릭수"]
-        ).round(0).astype("Int64")
+        campaign_detail["CTR(%)"] = (campaign_detail["클릭수"] / campaign_detail["노출수"] * 100).round(2)
+        campaign_detail["CPC"] = (campaign_detail["비용"] / campaign_detail["클릭수"]).round(0).astype("Int64")
 
         display_cols = ["그룹", "캠페인명", "노출수", "클릭수", "전환수", "비용", "CTR(%)", "CPC"]
         st.dataframe(
@@ -646,9 +749,7 @@ elif page == "🎯 캠페인 관리":
                         st.error("캠페인명은 필수입니다.")
                     else:
                         try:
-                            new_id = generate_campaign_id(
-                                selected_group_new, campaigns_df, groups_df
-                            )
+                            new_id = generate_campaign_id(selected_group_new, campaigns_df, groups_df)
                             append_campaign_master({
                                 "캠페인ID": new_id,
                                 "캠페인명": campaign_name,
@@ -669,7 +770,6 @@ elif page == "🎯 캠페인 관리":
 # ═══════════════════════════════════════════════════════════
 elif page == "💬 코멘트 관리":
     st.header("💬 기간 코멘트 관리")
-    st.caption("특정 기간에 대한 리뷰/인사이트/특이사항 등을 자유롭게 기록합니다.")
 
     try:
         comments_df = load_comments()
@@ -679,7 +779,6 @@ elif page == "💬 코멘트 관리":
 
     tab1, tab2 = st.tabs(["📝 새 코멘트 작성", "📋 코멘트 목록"])
 
-    # ─────── 작성 폼 ───────
     with tab1:
         st.subheader("새 코멘트 작성")
 
@@ -698,7 +797,6 @@ elif page == "💬 코멘트 관리":
             key="c_section",
         )
 
-        # 해당 기간에 기존 코멘트 있는지 미리보기
         c_section_short = get_section_label(c_section)
         existing = comments_df[
             (comments_df["년도"] == c_year)
@@ -707,13 +805,14 @@ elif page == "💬 코멘트 관리":
         ] if not comments_df.empty else pd.DataFrame()
 
         if not existing.empty:
-            st.warning(f"⚠️ 이 기간에 이미 {len(existing)}개의 코멘트가 있습니다. 아래는 새로 추가하는 것입니다.")
+            st.warning(f"⚠️ 이 기간에 이미 {len(existing)}개의 코멘트가 있습니다.")
 
         with st.form("form_comment", clear_on_submit=True):
-            author = st.text_input("작성자", value="빌리프")
+            # 작성자는 로그인한 사용자 이름으로 자동 채움
+            author = st.text_input("작성자", value=st.session_state.user_name)
             comment_text = st.text_area(
                 "코멘트 내용",
-                placeholder="예: 7월 상순은 영미권과 국내 캠페인 모두 전환 성과가 크게 개선됨. 영미권은 CTR 0.47%→0.97%로 약 2배 상승, CPC는 40% 감소...",
+                placeholder="예: 7월 상순은 영미권과 국내 캠페인 모두 전환 성과가 크게 개선됨...",
                 height=200,
             )
 
@@ -732,20 +831,18 @@ elif page == "💬 코멘트 관리":
                             "기간": c_section_short,
                             "코멘트": comment_text.strip(),
                             "작성일시": now_str,
-                            "작성자": author or "빌리프",
+                            "작성자": author or st.session_state.user_name,
                         })
                         st.success(f"✅ 코멘트 저장 완료! (ID: {new_id})")
                         st.cache_data.clear()
                     except Exception as e:
                         st.error(f"저장 실패: {e}")
 
-    # ─────── 목록 조회 ───────
     with tab2:
         st.subheader("코멘트 목록")
         if comments_df.empty:
             st.info("작성된 코멘트가 없습니다.")
         else:
-            # 필터
             col1, col2, col3 = st.columns(3)
             f_year = col1.selectbox(
                 "년도 필터",
@@ -773,7 +870,6 @@ elif page == "💬 코멘트 관리":
                 filtered = filtered[filtered["기간"] == f_section]
 
             filtered = filtered.sort_values("작성일시", ascending=False)
-
             st.caption(f"총 {len(filtered)}개 코멘트")
 
             for _, row in filtered.iterrows():
