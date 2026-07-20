@@ -665,7 +665,7 @@ if page == "📊 대시보드":
               f"{cpc_delta:+.1f}%" if cpc_delta is not None else None,
               delta_color="inverse")
 
-    # ─────── 📊 트렌드 차트 (최근 6개월) ───────
+# ─────── 📊 트렌드 차트 (최근 6개월) ───────
     st.subheader("📊 트렌드 (최근 6개월)")
 
     x_mode_label = st.radio(
@@ -691,47 +691,63 @@ if page == "📊 대시보드":
         x_order = trend_df.drop_duplicates("_x").sort_values("_sort")["_x"].tolist()
         groups_in_data = trend_df["그룹"].unique().tolist()
 
-        # 차트 1: 비용 트렌드
-        fig_cost = go.Figure()
-        for g in groups_in_data:
-            gdf = trend_df[trend_df["그룹"] == g]
-            fig_cost.add_trace(go.Scatter(
-                x=gdf["_x"],
-                y=gdf["비용"],
-                mode="lines+markers",
-                name=g,
-                hovertemplate="<b>%{x}</b><br>" + g + ": ₩%{y:,.0f}<extra></extra>",
-            ))
-        fig_cost.update_layout(
-            title="💰 비용 추이",
-            xaxis_title="",
-            yaxis_title="비용 (₩)",
-            hovermode="x unified",
-            height=350,
-            xaxis={"categoryorder": "array", "categoryarray": x_order},
-        )
-        st.plotly_chart(fig_cost, use_container_width=True)
+        # ─── 노출수 + 클릭수 (이중 Y축) ───
+        fig = go.Figure()
 
-        # 차트 2: 전환수 트렌드
-        fig_conv = go.Figure()
-        for g in groups_in_data:
+        # 색상 팔레트 (그룹별로 노출수/클릭수가 같은 색 계열)
+        color_palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
+
+        for i, g in enumerate(groups_in_data):
             gdf = trend_df[trend_df["그룹"] == g]
-            fig_conv.add_trace(go.Scatter(
-                x=gdf["_x"],
-                y=gdf["전환수"],
+            color = color_palette[i % len(color_palette)]
+
+            # 노출수: 왼쪽 Y축, 실선
+            fig.add_trace(go.Scatter(
+                x=gdf["_x"], y=gdf["노출수"],
                 mode="lines+markers",
-                name=g,
-                hovertemplate="<b>%{x}</b><br>" + g + ": %{y:,.0f}건<extra></extra>",
+                name=f"{g} 노출수",
+                line=dict(color=color, width=2),
+                marker=dict(size=8),
+                yaxis="y",
+                legendgroup=g,
+                hovertemplate="<b>%{x}</b><br>" + g + " 노출수: %{y:,.0f}<extra></extra>",
             ))
-        fig_conv.update_layout(
-            title="🎯 전환수 추이",
-            xaxis_title="",
-            yaxis_title="전환수",
+
+            # 클릭수: 오른쪽 Y축, 점선
+            fig.add_trace(go.Scatter(
+                x=gdf["_x"], y=gdf["클릭수"],
+                mode="lines+markers",
+                name=f"{g} 클릭수",
+                line=dict(color=color, width=2, dash="dot"),
+                marker=dict(size=6, symbol="diamond"),
+                yaxis="y2",
+                legendgroup=g,
+                hovertemplate="<b>%{x}</b><br>" + g + " 클릭수: %{y:,.0f}<extra></extra>",
+            ))
+
+        fig.update_layout(
+            title="👁️ 노출수(실선) · 🖱️ 클릭수(점선) 추이",
+            xaxis=dict(
+                title="",
+                categoryorder="array",
+                categoryarray=x_order,
+            ),
+            yaxis=dict(
+                title="노출수",
+                side="left",
+                showgrid=True,
+            ),
+            yaxis2=dict(
+                title="클릭수",
+                side="right",
+                overlaying="y",
+                showgrid=False,
+            ),
             hovermode="x unified",
-            height=350,
-            xaxis={"categoryorder": "array", "categoryarray": x_order},
+            height=450,
+            legend=dict(orientation="h", yanchor="bottom", y=1.05),
         )
-        st.plotly_chart(fig_conv, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
 
     if selected_campaign_id is None:
         st.subheader("🎯 그룹별 성과")
@@ -788,11 +804,46 @@ if page == "📊 대시보드":
         curr_metrics = curr_metrics[curr_metrics["그룹"] == selected_group]
 
     if not curr_metrics.empty:
-        pivot = curr_metrics.pivot_table(
-            index="그룹", columns="지표종류", values="지표값",
-            aggfunc="sum", fill_value=0,
+        # 그룹별 지표값 집계
+        metric_summary = curr_metrics.groupby(["그룹", "지표종류"])["지표값"].sum().reset_index()
+
+        # Grouped bar chart (그룹×지표별 개별 막대)
+        fig_metrics = go.Figure()
+
+        groups_in_metrics = metric_summary["그룹"].unique().tolist()
+        metrics_in_data = metric_summary["지표종류"].unique().tolist()
+
+        # 지표별로 trace 추가 (같은 지표는 같은 색)
+        metric_palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+                         "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"]
+
+        for i, metric in enumerate(metrics_in_data):
+            metric_data = metric_summary[metric_summary["지표종류"] == metric]
+            # 각 그룹별 값 (없는 그룹은 0으로)
+            values = []
+            for g in groups_in_metrics:
+                row = metric_data[metric_data["그룹"] == g]
+                values.append(int(row["지표값"].iloc[0]) if not row.empty else 0)
+
+            fig_metrics.add_trace(go.Bar(
+                x=groups_in_metrics,
+                y=values,
+                name=metric,
+                marker_color=metric_palette[i % len(metric_palette)],
+                text=values,
+                textposition="outside",
+                hovertemplate="<b>%{x}</b><br>" + metric + ": %{y:,.0f}건<extra></extra>",
+            ))
+
+        fig_metrics.update_layout(
+            title="",
+            xaxis_title="그룹",
+            yaxis_title="건수",
+            barmode="group",  # 그룹별로 막대를 옆에 나란히
+            height=400,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
         )
-        st.dataframe(pivot, use_container_width=True)
+        st.plotly_chart(fig_metrics, use_container_width=True)
     else:
         st.info("선택한 조건의 그룹지표 데이터가 없습니다.")
 
