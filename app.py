@@ -1,6 +1,6 @@
 """
 빌리프 광고 주간 리포트 시스템
-Phase 2-C: 리포트 상세 조회 + 그룹지표 입력 + 코멘트 관리
+Phase 4: 리포트 비교 기능 추가 (풀 기능)
 """
 
 import streamlit as st
@@ -206,6 +206,84 @@ def append_report_comment(row):
 
 
 # ═══════════════════════════════════════════════════════════
+# 🔄 비교 유틸
+# ═══════════════════════════════════════════════════════════
+
+def calc_change_pct(base, target):
+    """
+    기준 vs 대상 증감률 계산.
+    base가 기준(최신), target이 대상(과거).
+    반환: 증감률(%), 없으면 None (target=0 등)
+    """
+    if pd.isna(base) or pd.isna(target):
+        return None
+    if target == 0:
+        # 신규 등장 처리
+        if base > 0:
+            return None  # 신규는 별도 표시 (100%가 아닌 "신규"로)
+        return 0
+    return (base - target) / target * 100
+
+
+def format_change_display(base, target, is_currency=False, lower_is_better=False):
+    """
+    증감 값을 화살표+색상 태그로 반환.
+    lower_is_better=True면 CPC 처럼 낮을수록 좋음 (색상 반전).
+    """
+    if pd.isna(base) or base == 0:
+        base_str = "-"
+    elif is_currency:
+        base_str = f"₩{int(base):,}"
+    else:
+        base_str = f"{int(base):,}" if base == int(base) else f"{base:.2f}"
+
+    if pd.isna(target) or target == 0:
+        target_str = "-"
+    elif is_currency:
+        target_str = f"₩{int(target):,}"
+    else:
+        target_str = f"{int(target):,}" if target == int(target) else f"{target:.2f}"
+
+    # 신규 처리
+    if (pd.isna(target) or target == 0) and base > 0:
+        return base_str, target_str, "🆕 신규", "gray"
+
+    # 삭제 처리
+    if (pd.isna(base) or base == 0) and target > 0:
+        return base_str, target_str, "❌ 삭제됨", "gray"
+
+    change = calc_change_pct(base, target)
+    if change is None or change == 0:
+        return base_str, target_str, "→ 0.0%", "gray"
+
+    if change > 0:
+        arrow = "▲"
+        color = "red" if lower_is_better else "green"
+    else:
+        arrow = "▼"
+        color = "green" if lower_is_better else "red"
+
+    return base_str, target_str, f"{arrow} {change:+.1f}%", color
+
+
+def render_metric_row(label, base, target, is_currency=False, lower_is_better=False):
+    """
+    한 지표의 비교 행을 표시 (라벨 | 기준값 | 대상값 | 증감)
+    """
+    base_str, target_str, change_str, color = format_change_display(
+        base, target, is_currency, lower_is_better
+    )
+
+    color_html = f":{color}[{change_str}]"
+
+    col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
+    col1.markdown(f"**{label}**")
+    col2.markdown(base_str)
+    col3.markdown(target_str)
+    col4.markdown(color_html)
+
+
+# ═══════════════════════════════════════════════════════════
 # 🔐 로그인 시스템
 # ═══════════════════════════════════════════════════════════
 
@@ -330,17 +408,15 @@ with st.sidebar:
     st.divider()
 
     if role == "admin":
-        menu_options = ["📋 리포트 목록", "➕ 새 리포트 작성"]
+        menu_options = [
+            "📋 리포트 목록",
+            "➕ 새 리포트 작성",
+            "🔄 리포트 비교",
+        ]
     else:
         menu_options = ["📋 리포트 목록"]
 
-    # 상세 조회 중이면 자동으로 목록 페이지 활성
-    if st.session_state.selected_report_id:
-        default_index = 0  # 리포트 목록
-    else:
-        default_index = 0
-
-    page = st.radio("메뉴", menu_options, index=default_index)
+    page = st.radio("메뉴", menu_options)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -349,9 +425,6 @@ with st.sidebar:
 
 if page == "📋 리포트 목록":
 
-    # ───────────────────────────────────────────
-    # 세션에 선택된 리포트가 있으면 → 상세 페이지
-    # ───────────────────────────────────────────
     if st.session_state.selected_report_id:
         report_id = st.session_state.selected_report_id
 
@@ -367,7 +440,6 @@ if page == "📋 리포트 목록":
             st.error(f"데이터 로드 실패: {e}")
             st.stop()
 
-        # 리포트 정보
         matched = reports_df[reports_df["리포트ID"] == report_id]
         if matched.empty:
             st.error(f"리포트 {report_id}를 찾을 수 없습니다.")
@@ -378,14 +450,12 @@ if page == "📋 리포트 목록":
 
         report_info = matched.iloc[0]
 
-        # ─────── 목록으로 돌아가기 버튼 ───────
         if st.button("⬅️ 목록으로 돌아가기"):
             st.session_state.selected_report_id = None
             st.rerun()
 
         st.divider()
 
-        # ─────── ① 헤더 ───────
         st.markdown(f"# 📄 {report_info['주간제목']}")
         col1, col2, col3 = st.columns([2, 2, 1])
         col1.markdown(f"📅 **{report_info['시작일']} ~ {report_info['종료일']}**")
@@ -398,7 +468,6 @@ if page == "📋 리포트 목록":
 
         st.divider()
 
-        # 이 리포트의 데이터 필터링
         this_data = report_data_df[report_data_df["리포트ID"] == report_id] \
             if not report_data_df.empty else pd.DataFrame()
         this_metrics = report_metrics_df[report_metrics_df["리포트ID"] == report_id] \
@@ -406,13 +475,11 @@ if page == "📋 리포트 목록":
         this_comments = report_comments_df[report_comments_df["리포트ID"] == report_id] \
             if not report_comments_df.empty else pd.DataFrame()
 
-        # 매체 정보 조인 (그룹 → 매체)
         if not this_data.empty and not groups_df.empty:
             this_data = this_data.merge(
                 groups_df[["그룹", "광고매체"]], on="그룹", how="left"
             )
 
-        # ─────── ② 매체별 전체 요약 카드 ───────
         st.subheader("📋 매체별 요약")
 
         if this_data.empty:
@@ -432,7 +499,6 @@ if page == "📋 리포트 목록":
 
         st.divider()
 
-        # ─────── ③ 캠페인 그룹별 요약 ───────
         st.subheader("🎯 그룹별 성과")
 
         if not this_data.empty:
@@ -451,21 +517,15 @@ if page == "📋 리포트 목록":
                 group_summary["비용"] / group_summary["클릭수"]
             ).round(0).astype("Int64")
 
-            st.dataframe(
-                group_summary,
-                use_container_width=True,
-                hide_index=True,
-            )
+            st.dataframe(group_summary, use_container_width=True, hide_index=True)
         else:
             st.caption("표시할 데이터가 없습니다.")
 
         st.divider()
 
-        # ─────── ④ 캠페인 세부 데이터 (매체별로 분리) ───────
         st.subheader("🔍 캠페인 세부 데이터")
 
         if not this_data.empty:
-            # 캠페인명 조인
             detail = this_data.merge(
                 campaigns_df[["캠페인ID", "캠페인명", "예산", "유형"]],
                 on="캠페인ID", how="left"
@@ -491,7 +551,6 @@ if page == "📋 리포트 목록":
 
         st.divider()
 
-        # ─────── ⑤ 주요 지표 (그룹지표) ───────
         st.subheader("📌 주요 지표 (그룹 상세지표)")
 
         if this_metrics.empty:
@@ -506,14 +565,15 @@ if page == "📋 리포트 목록":
             )
             st.dataframe(pivot, use_container_width=True)
 
-        # 그룹지표 입력 UI (관리자만, 구글 매체 그룹만)
         if role == "admin":
             with st.expander("➕ 그룹지표 입력/추가"):
                 if metadata_df.empty:
                     st.warning("metadata 시트에 등록된 지표가 없습니다.")
                 else:
                     metric_groups = metadata_df["그룹"].unique().tolist()
-                    sel_group = st.selectbox("그룹", metric_groups, key=f"metric_group_{report_id}")
+                    sel_group = st.selectbox(
+                        "그룹", metric_groups, key=f"metric_group_{report_id}"
+                    )
                     metrics = get_metrics_for_group(metadata_df, sel_group)
 
                     if not metrics:
@@ -525,7 +585,8 @@ if page == "📋 리포트 목록":
                             cols = st.columns(len(metrics))
                             for i, m in enumerate(metrics):
                                 metric_values[m] = cols[i].number_input(
-                                    m, min_value=0, step=1, key=f"m_val_{report_id}_{m}"
+                                    m, min_value=0, step=1,
+                                    key=f"m_val_{report_id}_{m}"
                                 )
 
                             submitted = st.form_submit_button("💾 저장", type="primary")
@@ -546,10 +607,8 @@ if page == "📋 리포트 목록":
 
         st.divider()
 
-        # ─────── ⑥ 코멘트 ───────
         st.subheader("💬 코멘트")
 
-        # 기존 코멘트 목록
         if not this_comments.empty:
             this_comments_sorted = this_comments.sort_values("작성일시", ascending=False)
             for _, c in this_comments_sorted.iterrows():
@@ -561,13 +620,11 @@ if page == "📋 리포트 목록":
         else:
             st.caption("아직 코멘트가 없습니다.")
 
-        # 새 코멘트 작성 (관리자만)
         if role == "admin":
             with st.expander("➕ 새 코멘트 작성"):
                 with st.form(f"form_comment_{report_id}", clear_on_submit=True):
                     author = st.text_input(
-                        "작성자",
-                        value=st.session_state.user_name,
+                        "작성자", value=st.session_state.user_name,
                         key=f"c_author_{report_id}",
                     )
                     content = st.text_area(
@@ -595,9 +652,6 @@ if page == "📋 리포트 목록":
                             except Exception as e:
                                 st.error(f"저장 실패: {e}")
 
-    # ───────────────────────────────────────────
-    # 세션에 선택된 리포트 없음 → 목록 표시
-    # ───────────────────────────────────────────
     else:
         st.header("📋 리포트 목록")
 
@@ -637,7 +691,6 @@ if page == "📋 리포트 목록":
                     else:
                         col3.info(status)
 
-                    # 상세보기 버튼
                     if col4.button("🔍 상세보기", key=f"detail_{row['리포트ID']}"):
                         st.session_state.selected_report_id = row["리포트ID"]
                         st.rerun()
@@ -669,9 +722,6 @@ elif page == "➕ 새 리포트 작성":
         st.session_state.current_report_start = None
         st.session_state.current_report_end = None
 
-    # ───────────────────────────────────────────
-    # 상태 1: 리포트 헤더 미생성
-    # ───────────────────────────────────────────
     if st.session_state.current_report_id is None:
         st.subheader("1단계: 리포트 기본 정보")
         st.caption("주간 제목과 기간을 입력하면 새 리포트가 생성됩니다.")
@@ -722,9 +772,6 @@ elif page == "➕ 새 리포트 작성":
                     except Exception as e:
                         st.error(f"리포트 생성 실패: {e}")
 
-    # ───────────────────────────────────────────
-    # 상태 2: 캠페인 데이터 입력
-    # ───────────────────────────────────────────
     else:
         st.info(
             f"📄 작성 중: **{st.session_state.current_report_title}** "
@@ -739,7 +786,7 @@ elif page == "➕ 새 리포트 작성":
                         "current_report_start", "current_report_end"]:
                 if key in st.session_state:
                     del st.session_state[key]
-            st.session_state.selected_report_id = report_id  # 방금 만든 리포트 상세로 자동 이동
+            st.session_state.selected_report_id = report_id
             st.cache_data.clear()
             st.rerun()
 
@@ -816,7 +863,6 @@ elif page == "➕ 새 리포트 작성":
                 except Exception as e:
                     st.error(f"저장 실패: {e}")
 
-        # 지금까지 입력된 데이터
         st.divider()
         st.subheader("이 리포트에 지금까지 입력된 캠페인")
 
@@ -839,3 +885,326 @@ elif page == "➕ 새 리포트 작성":
                 hide_index=True,
             )
             st.caption(f"총 {len(display_df)}개 캠페인 입력됨")
+
+
+# ═══════════════════════════════════════════════════════════
+# 🔄 리포트 비교 페이지
+# ═══════════════════════════════════════════════════════════
+
+elif page == "🔄 리포트 비교":
+    if st.session_state.get("user_role") != "admin":
+        st.error("🚫 이 페이지에 접근할 권한이 없습니다.")
+        st.stop()
+
+    st.header("🔄 리포트 비교")
+    st.caption("두 개의 리포트를 선택하여 지표 변화를 확인합니다.")
+
+    try:
+        reports_df = load_reports()
+        report_data_df = load_report_data()
+        report_metrics_df = load_report_metrics()
+        report_comments_df = load_report_comments()
+        campaigns_df = load_campaigns()
+        groups_df = load_groups()
+    except Exception as e:
+        st.error(f"데이터 로드 실패: {e}")
+        st.stop()
+
+    if reports_df.empty or len(reports_df) < 2:
+        st.info("비교하려면 최소 2개의 리포트가 필요합니다.")
+        st.stop()
+
+    # 리포트 옵션
+    report_options = {
+        f"[{row['리포트ID']}] {row['주간제목']} ({row['시작일']} ~ {row['종료일']})": row["리포트ID"]
+        for _, row in reports_df.iterrows()
+    }
+
+    # 리포트 선택
+    col1, col2 = st.columns(2)
+    base_label = col1.selectbox(
+        "🔵 기준 리포트 (최신/이번주)",
+        list(report_options.keys()),
+        index=0,
+        key="cmp_base",
+    )
+    target_label = col2.selectbox(
+        "⚪ 대상 리포트 (비교 대상/지난주)",
+        list(report_options.keys()),
+        index=1 if len(report_options) > 1 else 0,
+        key="cmp_target",
+    )
+
+    base_id = report_options[base_label]
+    target_id = report_options[target_label]
+
+    if base_id == target_id:
+        st.warning("⚠️ 같은 리포트를 선택할 수 없습니다.")
+        st.stop()
+
+    # 캠페인 상세 비교 토글
+    show_campaign_detail = st.checkbox(
+        "🔍 개별 캠페인 상세 비교 표시", value=False,
+        help="개별 캠페인 단위까지 비교 결과를 표시합니다."
+    )
+
+    st.divider()
+
+    # 두 리포트 정보
+    base_info = reports_df[reports_df["리포트ID"] == base_id].iloc[0]
+    target_info = reports_df[reports_df["리포트ID"] == target_id].iloc[0]
+
+    st.markdown(f"### 🔵 기준: {base_info['주간제목']}")
+    st.caption(f"{base_info['시작일']} ~ {base_info['종료일']} ({base_id})")
+    st.markdown(f"### ⚪ 대상: {target_info['주간제목']}")
+    st.caption(f"{target_info['시작일']} ~ {target_info['종료일']} ({target_id})")
+
+    st.divider()
+
+    # 각 리포트의 데이터
+    base_data = report_data_df[report_data_df["리포트ID"] == base_id] \
+        if not report_data_df.empty else pd.DataFrame()
+    target_data = report_data_df[report_data_df["리포트ID"] == target_id] \
+        if not report_data_df.empty else pd.DataFrame()
+
+    # 그룹→매체 조인
+    if not base_data.empty:
+        base_data = base_data.merge(groups_df[["그룹", "광고매체"]], on="그룹", how="left")
+    if not target_data.empty:
+        target_data = target_data.merge(groups_df[["그룹", "광고매체"]], on="그룹", how="left")
+
+    # ─────── ① 매체별 전체 요약 비교 ───────
+    st.subheader("📋 매체별 요약 변화")
+
+    for media_name in ["구글", "네이버"]:
+        base_m = base_data[base_data["광고매체"] == media_name] if not base_data.empty else pd.DataFrame()
+        target_m = target_data[target_data["광고매체"] == media_name] if not target_data.empty else pd.DataFrame()
+
+        # 둘 다 없으면 스킵
+        if base_m.empty and target_m.empty:
+            continue
+
+        st.markdown(f"### {media_name}")
+
+        base_sum = {
+            "노출수": base_m["노출수"].sum() if not base_m.empty else 0,
+            "클릭수": base_m["클릭수"].sum() if not base_m.empty else 0,
+            "전환수": base_m["전환수"].sum() if not base_m.empty else 0,
+            "비용": base_m["비용"].sum() if not base_m.empty else 0,
+        }
+        target_sum = {
+            "노출수": target_m["노출수"].sum() if not target_m.empty else 0,
+            "클릭수": target_m["클릭수"].sum() if not target_m.empty else 0,
+            "전환수": target_m["전환수"].sum() if not target_m.empty else 0,
+            "비용": target_m["비용"].sum() if not target_m.empty else 0,
+        }
+
+        # CTR, CPC
+        base_ctr = (base_sum["클릭수"] / base_sum["노출수"] * 100) if base_sum["노출수"] else 0
+        base_cpc = (base_sum["비용"] / base_sum["클릭수"]) if base_sum["클릭수"] else 0
+        target_ctr = (target_sum["클릭수"] / target_sum["노출수"] * 100) if target_sum["노출수"] else 0
+        target_cpc = (target_sum["비용"] / target_sum["클릭수"]) if target_sum["클릭수"] else 0
+
+        # 헤더
+        h1, h2, h3, h4 = st.columns([2, 2, 2, 2])
+        h1.markdown("**지표**")
+        h2.markdown("**기준**")
+        h3.markdown("**대상**")
+        h4.markdown("**증감**")
+
+        render_metric_row("노출수", base_sum["노출수"], target_sum["노출수"])
+        render_metric_row("클릭수", base_sum["클릭수"], target_sum["클릭수"])
+        render_metric_row("전환수", base_sum["전환수"], target_sum["전환수"])
+        render_metric_row("비용", base_sum["비용"], target_sum["비용"], is_currency=True, lower_is_better=True)
+        render_metric_row("CTR(%)", base_ctr, target_ctr)
+        render_metric_row("CPC", base_cpc, target_cpc, is_currency=True, lower_is_better=True)
+
+        st.markdown("")
+
+    st.divider()
+
+    # ─────── ② 그룹별 비교 ───────
+    st.subheader("🎯 그룹별 성과 변화")
+
+    # 두 리포트의 그룹 unique 합집합
+    all_groups = set()
+    if not base_data.empty:
+        all_groups.update(base_data[["광고매체", "그룹"]].apply(tuple, axis=1).tolist())
+    if not target_data.empty:
+        all_groups.update(target_data[["광고매체", "그룹"]].apply(tuple, axis=1).tolist())
+
+    # 매체 → 그룹 순서로 정렬
+    all_groups_sorted = sorted(all_groups, key=lambda x: (x[0] or "", x[1] or ""))
+
+    for media_name, group_name in all_groups_sorted:
+        base_g = base_data[
+            (base_data["광고매체"] == media_name) & (base_data["그룹"] == group_name)
+        ] if not base_data.empty else pd.DataFrame()
+        target_g = target_data[
+            (target_data["광고매체"] == media_name) & (target_data["그룹"] == group_name)
+        ] if not target_data.empty else pd.DataFrame()
+
+        base_sum = {
+            "노출수": base_g["노출수"].sum() if not base_g.empty else 0,
+            "클릭수": base_g["클릭수"].sum() if not base_g.empty else 0,
+            "전환수": base_g["전환수"].sum() if not base_g.empty else 0,
+            "비용": base_g["비용"].sum() if not base_g.empty else 0,
+        }
+        target_sum = {
+            "노출수": target_g["노출수"].sum() if not target_g.empty else 0,
+            "클릭수": target_g["클릭수"].sum() if not target_g.empty else 0,
+            "전환수": target_g["전환수"].sum() if not target_g.empty else 0,
+            "비용": target_g["비용"].sum() if not target_g.empty else 0,
+        }
+
+        with st.expander(f"**{media_name} - {group_name}**", expanded=True):
+            h1, h2, h3, h4 = st.columns([2, 2, 2, 2])
+            h1.markdown("**지표**")
+            h2.markdown("**기준**")
+            h3.markdown("**대상**")
+            h4.markdown("**증감**")
+
+            render_metric_row("노출수", base_sum["노출수"], target_sum["노출수"])
+            render_metric_row("클릭수", base_sum["클릭수"], target_sum["클릭수"])
+            render_metric_row("전환수", base_sum["전환수"], target_sum["전환수"])
+            render_metric_row(
+                "비용", base_sum["비용"], target_sum["비용"],
+                is_currency=True, lower_is_better=True
+            )
+
+    st.divider()
+
+    # ─────── ③ 개별 캠페인 상세 비교 (토글) ───────
+    if show_campaign_detail:
+        st.subheader("🔍 개별 캠페인 상세 비교")
+
+        # 두 리포트의 캠페인 unique 합집합
+        all_campaigns = set()
+        if not base_data.empty:
+            all_campaigns.update(base_data["캠페인ID"].tolist())
+        if not target_data.empty:
+            all_campaigns.update(target_data["캠페인ID"].tolist())
+
+        # 캠페인 정보 조회
+        for camp_id in sorted(all_campaigns):
+            camp_info = campaigns_df[campaigns_df["캠페인ID"] == camp_id]
+            if camp_info.empty:
+                camp_name = f"(알 수 없음)"
+                group_name = "-"
+            else:
+                camp_name = camp_info.iloc[0]["캠페인명"]
+                group_name = camp_info.iloc[0]["그룹"]
+
+            base_c = base_data[base_data["캠페인ID"] == camp_id] if not base_data.empty else pd.DataFrame()
+            target_c = target_data[target_data["캠페인ID"] == camp_id] if not target_data.empty else pd.DataFrame()
+
+            base_sum = {
+                "노출수": base_c["노출수"].sum() if not base_c.empty else 0,
+                "클릭수": base_c["클릭수"].sum() if not base_c.empty else 0,
+                "전환수": base_c["전환수"].sum() if not base_c.empty else 0,
+                "비용": base_c["비용"].sum() if not base_c.empty else 0,
+            }
+            target_sum = {
+                "노출수": target_c["노출수"].sum() if not target_c.empty else 0,
+                "클릭수": target_c["클릭수"].sum() if not target_c.empty else 0,
+                "전환수": target_c["전환수"].sum() if not target_c.empty else 0,
+                "비용": target_c["비용"].sum() if not target_c.empty else 0,
+            }
+
+            with st.expander(f"**[{camp_id}]** {camp_name} ({group_name})"):
+                h1, h2, h3, h4 = st.columns([2, 2, 2, 2])
+                h1.markdown("**지표**")
+                h2.markdown("**기준**")
+                h3.markdown("**대상**")
+                h4.markdown("**증감**")
+
+                render_metric_row("노출수", base_sum["노출수"], target_sum["노출수"])
+                render_metric_row("클릭수", base_sum["클릭수"], target_sum["클릭수"])
+                render_metric_row("전환수", base_sum["전환수"], target_sum["전환수"])
+                render_metric_row(
+                    "비용", base_sum["비용"], target_sum["비용"],
+                    is_currency=True, lower_is_better=True
+                )
+
+        st.divider()
+
+    # ─────── ④ 그룹지표 비교 ───────
+    st.subheader("📌 주요 지표 변화")
+
+    base_metrics = report_metrics_df[report_metrics_df["리포트ID"] == base_id] \
+        if not report_metrics_df.empty else pd.DataFrame()
+    target_metrics = report_metrics_df[report_metrics_df["리포트ID"] == target_id] \
+        if not report_metrics_df.empty else pd.DataFrame()
+
+    # 두 리포트 지표의 그룹+지표종류 합집합
+    all_metric_keys = set()
+    if not base_metrics.empty:
+        all_metric_keys.update(base_metrics[["그룹", "지표종류"]].apply(tuple, axis=1).tolist())
+    if not target_metrics.empty:
+        all_metric_keys.update(target_metrics[["그룹", "지표종류"]].apply(tuple, axis=1).tolist())
+
+    if not all_metric_keys:
+        st.caption("표시할 그룹지표가 없습니다.")
+    else:
+        # 그룹으로 묶어서 표시
+        groups_with_metrics = sorted(set(k[0] for k in all_metric_keys))
+
+        for group_name in groups_with_metrics:
+            st.markdown(f"### {group_name}")
+
+            group_metric_keys = sorted([k for k in all_metric_keys if k[0] == group_name])
+
+            h1, h2, h3, h4 = st.columns([2, 2, 2, 2])
+            h1.markdown("**지표종류**")
+            h2.markdown("**기준**")
+            h3.markdown("**대상**")
+            h4.markdown("**증감**")
+
+            for _, metric_type in group_metric_keys:
+                base_val = base_metrics[
+                    (base_metrics["그룹"] == group_name)
+                    & (base_metrics["지표종류"] == metric_type)
+                ]["지표값"].sum() if not base_metrics.empty else 0
+
+                target_val = target_metrics[
+                    (target_metrics["그룹"] == group_name)
+                    & (target_metrics["지표종류"] == metric_type)
+                ]["지표값"].sum() if not target_metrics.empty else 0
+
+                render_metric_row(metric_type, base_val, target_val)
+
+            st.markdown("")
+
+    st.divider()
+
+    # ─────── ⑤ 코멘트 나란히 표시 ───────
+    st.subheader("💬 코멘트 (참고용)")
+
+    base_comments = report_comments_df[report_comments_df["리포트ID"] == base_id] \
+        if not report_comments_df.empty else pd.DataFrame()
+    target_comments = report_comments_df[report_comments_df["리포트ID"] == target_id] \
+        if not report_comments_df.empty else pd.DataFrame()
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown(f"#### 🔵 {base_info['주간제목']}")
+        if base_comments.empty:
+            st.caption("코멘트 없음")
+        else:
+            for _, c in base_comments.sort_values("작성일시", ascending=False).iterrows():
+                with st.container(border=True):
+                    st.markdown(f"**✍️ {c['작성자']}**")
+                    st.caption(f"_{c['작성일시']}_")
+                    st.write(c["코멘트내용"])
+
+    with col2:
+        st.markdown(f"#### ⚪ {target_info['주간제목']}")
+        if target_comments.empty:
+            st.caption("코멘트 없음")
+        else:
+            for _, c in target_comments.sort_values("작성일시", ascending=False).iterrows():
+                with st.container(border=True):
+                    st.markdown(f"**✍️ {c['작성자']}**")
+                    st.caption(f"_{c['작성일시']}_")
+                    st.write(c["코멘트내용"])
