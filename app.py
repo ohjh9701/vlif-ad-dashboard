@@ -1,6 +1,6 @@
 """
 빌리프 광고 주간 리포트 시스템
-Phase 4: 리포트 비교 기능 추가 (풀 기능)
+Phase 3: 인쇄/PDF 최적화 스타일링 + 로고 + 브랜드 색상
 """
 
 import streamlit as st
@@ -10,6 +10,7 @@ from google.oauth2.service_account import Credentials
 from datetime import date, datetime, timedelta
 import bcrypt
 import re
+import os
 
 
 # ═══════════════════════════════════════════════════════════
@@ -24,6 +25,155 @@ st.set_page_config(
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/11CyqrC-4VIwxaiTzJBJjfyxWb8ARlbjBmfAVIZd3KNU/edit"
 SESSION_HOURS = 24
+
+# 브랜드 색상
+BRAND_COLOR = "#a99a80"       # 로고 브라운/베이지
+BRAND_COLOR_DARK = "#8b7d67"  # 어두운 톤 (헤더용)
+BRAND_COLOR_LIGHT = "#e8e0d3" # 밝은 톤 (배경용)
+
+LOGO_PATH = "assets/vlif_logo.png"
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎨 CSS 스타일 (브랜드 + 인쇄)
+# ═══════════════════════════════════════════════════════════
+
+CUSTOM_CSS = f"""
+<style>
+    /* ─── 브랜드 색상 강조 ─── */
+    .report-header {{
+        border-bottom: 3px solid {BRAND_COLOR};
+        padding-bottom: 15px;
+        margin-bottom: 25px;
+    }}
+
+    .report-header-inner {{
+        display: flex;
+        align-items: center;
+        gap: 20px;
+    }}
+
+    .report-title {{
+        color: {BRAND_COLOR_DARK};
+        font-weight: 700;
+        margin: 0;
+    }}
+
+    .report-subtitle {{
+        color: {BRAND_COLOR};
+        margin: 0;
+        font-size: 14px;
+    }}
+
+    /* ─── 섹션 헤더 하이라이트 ─── */
+    h2, h3 {{
+        color: {BRAND_COLOR_DARK};
+    }}
+
+    /* ─── 인쇄 스타일 ─── */
+    @media print {{
+        /* 사이드바 숨김 */
+        [data-testid="stSidebar"] {{
+            display: none !important;
+        }}
+
+        /* 헤더/툴바 숨김 */
+        header {{
+            display: none !important;
+        }}
+
+        /* 인쇄 버튼 숨김 */
+        .no-print, .no-print * {{
+            display: none !important;
+        }}
+
+        /* Streamlit 기본 여백 조정 */
+        .main .block-container {{
+            padding: 1rem 1.5rem !important;
+            max-width: 100% !important;
+        }}
+
+        /* 색상 강제 표시 (인쇄 시 색 손실 방지) */
+        * {{
+            -webkit-print-color-adjust: exact !important;
+            color-adjust: exact !important;
+            print-color-adjust: exact !important;
+        }}
+
+        /* 페이지 나눔 힌트 */
+        h2 {{
+            page-break-before: auto;
+            page-break-after: avoid;
+        }}
+
+        h3, h4 {{
+            page-break-after: avoid;
+        }}
+
+        /* 표는 나눠지지 않게 */
+        table, .stDataFrame {{
+            page-break-inside: avoid;
+        }}
+
+        /* expander 자동 펼침 (인쇄 시 내용이 보이도록) */
+        details {{
+            display: block !important;
+        }}
+
+        details summary {{
+            display: none !important;
+        }}
+
+        /* 폼 요소, 입력 위젯 숨김 */
+        [data-testid="stForm"],
+        [data-testid="stButton"],
+        [data-baseweb="select"],
+        input, textarea {{
+            display: none !important;
+        }}
+    }}
+</style>
+"""
+
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+
+# ═══════════════════════════════════════════════════════════
+# 로고 표시 헬퍼
+# ═══════════════════════════════════════════════════════════
+
+def show_logo(width=150):
+    """로고 파일 표시. 파일 없으면 조용히 스킵."""
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, width=width)
+
+
+def show_report_header_with_logo():
+    """리포트용 브랜드 헤더 (로고 + 병원명)."""
+    if os.path.exists(LOGO_PATH):
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            st.image(LOGO_PATH, width=150)
+        with col2:
+            st.markdown(
+                f"""
+                <div style='padding-top: 30px;'>
+                    <h2 class='report-title' style='margin: 0; font-size: 24px;'>빌리프성형외과의원</h2>
+                    <p class='report-subtitle' style='margin: 5px 0 0 0;'>주간 광고 리포트</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+    else:
+        st.markdown(
+            f"""
+            <div>
+                <h2 class='report-title' style='margin: 0;'>빌리프성형외과의원</h2>
+                <p class='report-subtitle'>주간 광고 리포트</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -210,26 +360,16 @@ def append_report_comment(row):
 # ═══════════════════════════════════════════════════════════
 
 def calc_change_pct(base, target):
-    """
-    기준 vs 대상 증감률 계산.
-    base가 기준(최신), target이 대상(과거).
-    반환: 증감률(%), 없으면 None (target=0 등)
-    """
     if pd.isna(base) or pd.isna(target):
         return None
     if target == 0:
-        # 신규 등장 처리
         if base > 0:
-            return None  # 신규는 별도 표시 (100%가 아닌 "신규"로)
+            return None
         return 0
     return (base - target) / target * 100
 
 
 def format_change_display(base, target, is_currency=False, lower_is_better=False):
-    """
-    증감 값을 화살표+색상 태그로 반환.
-    lower_is_better=True면 CPC 처럼 낮을수록 좋음 (색상 반전).
-    """
     if pd.isna(base) or base == 0:
         base_str = "-"
     elif is_currency:
@@ -244,11 +384,9 @@ def format_change_display(base, target, is_currency=False, lower_is_better=False
     else:
         target_str = f"{int(target):,}" if target == int(target) else f"{target:.2f}"
 
-    # 신규 처리
     if (pd.isna(target) or target == 0) and base > 0:
         return base_str, target_str, "🆕 신규", "gray"
 
-    # 삭제 처리
     if (pd.isna(base) or base == 0) and target > 0:
         return base_str, target_str, "❌ 삭제됨", "gray"
 
@@ -267,13 +405,9 @@ def format_change_display(base, target, is_currency=False, lower_is_better=False
 
 
 def render_metric_row(label, base, target, is_currency=False, lower_is_better=False):
-    """
-    한 지표의 비교 행을 표시 (라벨 | 기준값 | 대상값 | 증감)
-    """
     base_str, target_str, change_str, color = format_change_display(
         base, target, is_currency, lower_is_better
     )
-
     color_html = f":{color}[{change_str}]"
 
     col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
@@ -336,8 +470,13 @@ def is_logged_in():
 def show_login_page():
     _, center, _ = st.columns([1, 2, 1])
     with center:
-        st.title("🔐 빌리프 광고 주간 리포트")
-        st.caption("로그인이 필요합니다.")
+        # 로고 표시
+        if os.path.exists(LOGO_PATH):
+            logo_col1, logo_col2, logo_col3 = st.columns([1, 2, 1])
+            with logo_col2:
+                st.image(LOGO_PATH, width=180)
+        st.markdown(f"<h1 style='text-align: center; color: {BRAND_COLOR_DARK};'>빌리프 광고 주간 리포트</h1>", unsafe_allow_html=True)
+        st.caption("<p style='text-align: center;'>로그인이 필요합니다.</p>", unsafe_allow_html=True)
         st.divider()
 
         with st.form("login_form"):
@@ -382,12 +521,6 @@ if not is_logged_in():
 # 이하 로그인 성공한 사용자만 접근
 # ═══════════════════════════════════════════════════════════
 
-st.title("📋 빌리프 광고 주간 리포트")
-
-
-# ─────────────────────────────────
-# 세션 상태 초기화
-# ─────────────────────────────────
 if "selected_report_id" not in st.session_state:
     st.session_state.selected_report_id = None
 
@@ -426,6 +559,9 @@ with st.sidebar:
 if page == "📋 리포트 목록":
 
     if st.session_state.selected_report_id:
+        # ═══════════════════════════════════════════
+        # 상세 조회 화면 (인쇄 최적화 페이지)
+        # ═══════════════════════════════════════════
         report_id = st.session_state.selected_report_id
 
         try:
@@ -450,12 +586,41 @@ if page == "📋 리포트 목록":
 
         report_info = matched.iloc[0]
 
-        if st.button("⬅️ 목록으로 돌아가기"):
-            st.session_state.selected_report_id = None
-            st.rerun()
+        # ─── 인쇄 시 숨길 UI (뒤로가기 + 인쇄 버튼) ───
+        st.markdown('<div class="no-print">', unsafe_allow_html=True)
+        col_back, col_print = st.columns([3, 1])
+        with col_back:
+            if st.button("⬅️ 목록으로 돌아가기"):
+                st.session_state.selected_report_id = None
+                st.rerun()
+        with col_print:
+            # 인쇄 버튼 (JavaScript로 window.print() 호출)
+            st.markdown(
+                """
+                <button onclick="window.print()" style="
+                    background-color: #a99a80;
+                    color: white;
+                    border: none;
+                    padding: 8px 16px;
+                    border-radius: 6px;
+                    cursor: pointer;
+                    font-size: 14px;
+                    font-weight: 600;
+                    width: 100%;
+                ">🖨️ 인쇄 / PDF 저장</button>
+                """,
+                unsafe_allow_html=True,
+            )
+        st.markdown('</div>', unsafe_allow_html=True)
 
         st.divider()
 
+        # ─── 브랜드 헤더 (로고 + 병원명) ───
+        show_report_header_with_logo()
+
+        st.markdown('<hr style="border: 2px solid #a99a80; margin: 20px 0;">', unsafe_allow_html=True)
+
+        # ─── 리포트 헤더 (제목, 기간, ID) ───
         st.markdown(f"# 📄 {report_info['주간제목']}")
         col1, col2, col3 = st.columns([2, 2, 1])
         col1.markdown(f"📅 **{report_info['시작일']} ~ {report_info['종료일']}**")
@@ -565,7 +730,9 @@ if page == "📋 리포트 목록":
             )
             st.dataframe(pivot, use_container_width=True)
 
+        # ─── 그룹지표 입력 (인쇄 시 숨김) ───
         if role == "admin":
+            st.markdown('<div class="no-print">', unsafe_allow_html=True)
             with st.expander("➕ 그룹지표 입력/추가"):
                 if metadata_df.empty:
                     st.warning("metadata 시트에 등록된 지표가 없습니다.")
@@ -604,6 +771,7 @@ if page == "📋 리포트 목록":
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"저장 실패: {e}")
+            st.markdown('</div>', unsafe_allow_html=True)
 
         st.divider()
 
@@ -620,7 +788,9 @@ if page == "📋 리포트 목록":
         else:
             st.caption("아직 코멘트가 없습니다.")
 
+        # ─── 코멘트 입력 (인쇄 시 숨김) ───
         if role == "admin":
+            st.markdown('<div class="no-print">', unsafe_allow_html=True)
             with st.expander("➕ 새 코멘트 작성"):
                 with st.form(f"form_comment_{report_id}", clear_on_submit=True):
                     author = st.text_input(
@@ -651,8 +821,13 @@ if page == "📋 리포트 목록":
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"저장 실패: {e}")
+            st.markdown('</div>', unsafe_allow_html=True)
 
     else:
+        # ═══════════════════════════════════════════
+        # 리포트 목록 화면
+        # ═══════════════════════════════════════════
+        st.title("📋 빌리프 광고 주간 리포트")
         st.header("📋 리포트 목록")
 
         try:
@@ -701,6 +876,8 @@ if page == "📋 리포트 목록":
 # ═══════════════════════════════════════════════════════════
 
 elif page == "➕ 새 리포트 작성":
+    st.title("📋 빌리프 광고 주간 리포트")
+
     if st.session_state.get("user_role") != "admin":
         st.error("🚫 이 페이지에 접근할 권한이 없습니다.")
         st.stop()
@@ -892,6 +1069,8 @@ elif page == "➕ 새 리포트 작성":
 # ═══════════════════════════════════════════════════════════
 
 elif page == "🔄 리포트 비교":
+    st.title("📋 빌리프 광고 주간 리포트")
+
     if st.session_state.get("user_role") != "admin":
         st.error("🚫 이 페이지에 접근할 권한이 없습니다.")
         st.stop()
@@ -914,13 +1093,11 @@ elif page == "🔄 리포트 비교":
         st.info("비교하려면 최소 2개의 리포트가 필요합니다.")
         st.stop()
 
-    # 리포트 옵션
     report_options = {
         f"[{row['리포트ID']}] {row['주간제목']} ({row['시작일']} ~ {row['종료일']})": row["리포트ID"]
         for _, row in reports_df.iterrows()
     }
 
-    # 리포트 선택
     col1, col2 = st.columns(2)
     base_label = col1.selectbox(
         "🔵 기준 리포트 (최신/이번주)",
@@ -942,7 +1119,6 @@ elif page == "🔄 리포트 비교":
         st.warning("⚠️ 같은 리포트를 선택할 수 없습니다.")
         st.stop()
 
-    # 캠페인 상세 비교 토글
     show_campaign_detail = st.checkbox(
         "🔍 개별 캠페인 상세 비교 표시", value=False,
         help="개별 캠페인 단위까지 비교 결과를 표시합니다."
@@ -950,7 +1126,6 @@ elif page == "🔄 리포트 비교":
 
     st.divider()
 
-    # 두 리포트 정보
     base_info = reports_df[reports_df["리포트ID"] == base_id].iloc[0]
     target_info = reports_df[reports_df["리포트ID"] == target_id].iloc[0]
 
@@ -961,26 +1136,22 @@ elif page == "🔄 리포트 비교":
 
     st.divider()
 
-    # 각 리포트의 데이터
     base_data = report_data_df[report_data_df["리포트ID"] == base_id] \
         if not report_data_df.empty else pd.DataFrame()
     target_data = report_data_df[report_data_df["리포트ID"] == target_id] \
         if not report_data_df.empty else pd.DataFrame()
 
-    # 그룹→매체 조인
     if not base_data.empty:
         base_data = base_data.merge(groups_df[["그룹", "광고매체"]], on="그룹", how="left")
     if not target_data.empty:
         target_data = target_data.merge(groups_df[["그룹", "광고매체"]], on="그룹", how="left")
 
-    # ─────── ① 매체별 전체 요약 비교 ───────
     st.subheader("📋 매체별 요약 변화")
 
     for media_name in ["구글", "네이버"]:
         base_m = base_data[base_data["광고매체"] == media_name] if not base_data.empty else pd.DataFrame()
         target_m = target_data[target_data["광고매체"] == media_name] if not target_data.empty else pd.DataFrame()
 
-        # 둘 다 없으면 스킵
         if base_m.empty and target_m.empty:
             continue
 
@@ -999,13 +1170,11 @@ elif page == "🔄 리포트 비교":
             "비용": target_m["비용"].sum() if not target_m.empty else 0,
         }
 
-        # CTR, CPC
         base_ctr = (base_sum["클릭수"] / base_sum["노출수"] * 100) if base_sum["노출수"] else 0
         base_cpc = (base_sum["비용"] / base_sum["클릭수"]) if base_sum["클릭수"] else 0
         target_ctr = (target_sum["클릭수"] / target_sum["노출수"] * 100) if target_sum["노출수"] else 0
         target_cpc = (target_sum["비용"] / target_sum["클릭수"]) if target_sum["클릭수"] else 0
 
-        # 헤더
         h1, h2, h3, h4 = st.columns([2, 2, 2, 2])
         h1.markdown("**지표**")
         h2.markdown("**기준**")
@@ -1023,17 +1192,14 @@ elif page == "🔄 리포트 비교":
 
     st.divider()
 
-    # ─────── ② 그룹별 비교 ───────
     st.subheader("🎯 그룹별 성과 변화")
 
-    # 두 리포트의 그룹 unique 합집합
     all_groups = set()
     if not base_data.empty:
         all_groups.update(base_data[["광고매체", "그룹"]].apply(tuple, axis=1).tolist())
     if not target_data.empty:
         all_groups.update(target_data[["광고매체", "그룹"]].apply(tuple, axis=1).tolist())
 
-    # 매체 → 그룹 순서로 정렬
     all_groups_sorted = sorted(all_groups, key=lambda x: (x[0] or "", x[1] or ""))
 
     for media_name, group_name in all_groups_sorted:
@@ -1074,18 +1240,15 @@ elif page == "🔄 리포트 비교":
 
     st.divider()
 
-    # ─────── ③ 개별 캠페인 상세 비교 (토글) ───────
     if show_campaign_detail:
         st.subheader("🔍 개별 캠페인 상세 비교")
 
-        # 두 리포트의 캠페인 unique 합집합
         all_campaigns = set()
         if not base_data.empty:
             all_campaigns.update(base_data["캠페인ID"].tolist())
         if not target_data.empty:
             all_campaigns.update(target_data["캠페인ID"].tolist())
 
-        # 캠페인 정보 조회
         for camp_id in sorted(all_campaigns):
             camp_info = campaigns_df[campaigns_df["캠페인ID"] == camp_id]
             if camp_info.empty:
@@ -1128,7 +1291,6 @@ elif page == "🔄 리포트 비교":
 
         st.divider()
 
-    # ─────── ④ 그룹지표 비교 ───────
     st.subheader("📌 주요 지표 변화")
 
     base_metrics = report_metrics_df[report_metrics_df["리포트ID"] == base_id] \
@@ -1136,7 +1298,6 @@ elif page == "🔄 리포트 비교":
     target_metrics = report_metrics_df[report_metrics_df["리포트ID"] == target_id] \
         if not report_metrics_df.empty else pd.DataFrame()
 
-    # 두 리포트 지표의 그룹+지표종류 합집합
     all_metric_keys = set()
     if not base_metrics.empty:
         all_metric_keys.update(base_metrics[["그룹", "지표종류"]].apply(tuple, axis=1).tolist())
@@ -1146,7 +1307,6 @@ elif page == "🔄 리포트 비교":
     if not all_metric_keys:
         st.caption("표시할 그룹지표가 없습니다.")
     else:
-        # 그룹으로 묶어서 표시
         groups_with_metrics = sorted(set(k[0] for k in all_metric_keys))
 
         for group_name in groups_with_metrics:
@@ -1177,7 +1337,6 @@ elif page == "🔄 리포트 비교":
 
     st.divider()
 
-    # ─────── ⑤ 코멘트 나란히 표시 ───────
     st.subheader("💬 코멘트 (참고용)")
 
     base_comments = report_comments_df[report_comments_df["리포트ID"] == base_id] \
