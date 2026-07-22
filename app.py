@@ -1,6 +1,6 @@
 """
 빌리프 광고 주간 리포트 시스템
-Phase 3: 인쇄/PDF 최적화 스타일링 + 로고 + 브랜드 색상
+Phase 5: 수정/삭제 기능 추가
 """
 
 import streamlit as st
@@ -26,105 +26,51 @@ st.set_page_config(
 SHEET_URL = "https://docs.google.com/spreadsheets/d/11CyqrC-4VIwxaiTzJBJjfyxWb8ARlbjBmfAVIZd3KNU/edit"
 SESSION_HOURS = 24
 
-# 브랜드 색상
-BRAND_COLOR = "#a99a80"       # 로고 브라운/베이지
-BRAND_COLOR_DARK = "#8b7d67"  # 어두운 톤 (헤더용)
-BRAND_COLOR_LIGHT = "#e8e0d3" # 밝은 톤 (배경용)
+BRAND_COLOR = "#a99a80"
+BRAND_COLOR_DARK = "#8b7d67"
+BRAND_COLOR_LIGHT = "#e8e0d3"
 
 LOGO_PATH = "assets/vlif_logo.png"
 
 
 # ═══════════════════════════════════════════════════════════
-# 🎨 CSS 스타일 (브랜드 + 인쇄)
+# 🎨 CSS 스타일
 # ═══════════════════════════════════════════════════════════
 
 CUSTOM_CSS = f"""
 <style>
-    /* ─── 브랜드 색상 강조 ─── */
-    .report-header {{
-        border-bottom: 3px solid {BRAND_COLOR};
-        padding-bottom: 15px;
-        margin-bottom: 25px;
-    }}
-
-    .report-header-inner {{
-        display: flex;
-        align-items: center;
-        gap: 20px;
-    }}
-
     .report-title {{
         color: {BRAND_COLOR_DARK};
         font-weight: 700;
         margin: 0;
     }}
-
     .report-subtitle {{
         color: {BRAND_COLOR};
         margin: 0;
         font-size: 14px;
     }}
-
-    /* ─── 섹션 헤더 하이라이트 ─── */
     h2, h3 {{
         color: {BRAND_COLOR_DARK};
     }}
 
-    /* ─── 인쇄 스타일 ─── */
     @media print {{
-        /* 사이드바 숨김 */
-        [data-testid="stSidebar"] {{
-            display: none !important;
-        }}
-
-        /* 헤더/툴바 숨김 */
-        header {{
-            display: none !important;
-        }}
-
-        /* 인쇄 버튼 숨김 */
-        .no-print, .no-print * {{
-            display: none !important;
-        }}
-
-        /* Streamlit 기본 여백 조정 */
+        [data-testid="stSidebar"] {{ display: none !important; }}
+        header {{ display: none !important; }}
+        .no-print, .no-print * {{ display: none !important; }}
         .main .block-container {{
             padding: 1rem 1.5rem !important;
             max-width: 100% !important;
         }}
-
-        /* 색상 강제 표시 (인쇄 시 색 손실 방지) */
         * {{
             -webkit-print-color-adjust: exact !important;
             color-adjust: exact !important;
             print-color-adjust: exact !important;
         }}
-
-        /* 페이지 나눔 힌트 */
-        h2 {{
-            page-break-before: auto;
-            page-break-after: avoid;
-        }}
-
-        h3, h4 {{
-            page-break-after: avoid;
-        }}
-
-        /* 표는 나눠지지 않게 */
-        table, .stDataFrame {{
-            page-break-inside: avoid;
-        }}
-
-        /* expander 자동 펼침 (인쇄 시 내용이 보이도록) */
-        details {{
-            display: block !important;
-        }}
-
-        details summary {{
-            display: none !important;
-        }}
-
-        /* 폼 요소, 입력 위젯 숨김 */
+        h2 {{ page-break-before: auto; page-break-after: avoid; }}
+        h3, h4 {{ page-break-after: avoid; }}
+        table, .stDataFrame {{ page-break-inside: avoid; }}
+        details {{ display: block !important; }}
+        details summary {{ display: none !important; }}
         [data-testid="stForm"],
         [data-testid="stButton"],
         [data-baseweb="select"],
@@ -139,17 +85,10 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════
-# 로고 표시 헬퍼
+# 로고 헬퍼
 # ═══════════════════════════════════════════════════════════
 
-def show_logo(width=150):
-    """로고 파일 표시. 파일 없으면 조용히 스킵."""
-    if os.path.exists(LOGO_PATH):
-        st.image(LOGO_PATH, width=width)
-
-
 def show_report_header_with_logo():
-    """리포트용 브랜드 헤더 (로고 + 병원명)."""
     if os.path.exists(LOGO_PATH):
         col1, col2 = st.columns([1, 4])
         with col1:
@@ -227,7 +166,7 @@ def get_worksheet(sheet_name: str):
 
 
 # ═══════════════════════════════════════════════════════════
-# 데이터 로드
+# 데이터 로드 (시트 행 번호 추적을 위한 확장)
 # ═══════════════════════════════════════════════════════════
 
 @st.cache_data(ttl=30)
@@ -238,8 +177,13 @@ def load_users():
 
 @st.cache_data(ttl=60)
 def load_reports():
+    """
+    reports 시트 로드. 시트 행 번호도 함께 저장 (수정/삭제용).
+    시트 행 번호 = 헤더 다음부터 시작이므로 index + 2
+    """
     df = pd.DataFrame(get_worksheet("reports").get_all_records())
     if not df.empty:
+        df["_row"] = df.index + 2  # 시트에서 실제 행 번호
         for col in ["시작일", "종료일"]:
             if col in df.columns:
                 df[f"{col}_dt"] = df[col].apply(parse_date)
@@ -250,6 +194,7 @@ def load_reports():
 def load_report_data():
     df = pd.DataFrame(get_worksheet("report_data").get_all_records())
     if not df.empty:
+        df["_row"] = df.index + 2
         for col in ["노출수", "클릭수", "전환수", "비용"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -259,14 +204,18 @@ def load_report_data():
 @st.cache_data(ttl=60)
 def load_report_metrics():
     df = pd.DataFrame(get_worksheet("report_metrics").get_all_records())
-    if not df.empty and "지표값" in df.columns:
-        df["지표값"] = pd.to_numeric(df["지표값"], errors="coerce")
+    if not df.empty:
+        df["_row"] = df.index + 2
+        if "지표값" in df.columns:
+            df["지표값"] = pd.to_numeric(df["지표값"], errors="coerce")
     return df
 
 
 @st.cache_data(ttl=60)
 def load_report_comments():
     df = pd.DataFrame(get_worksheet("report_comments").get_all_records())
+    if not df.empty:
+        df["_row"] = df.index + 2
     return df
 
 
@@ -326,7 +275,7 @@ def generate_report_id(reports_df):
 
 
 # ═══════════════════════════════════════════════════════════
-# 시트 저장
+# 시트 저장 (추가)
 # ═══════════════════════════════════════════════════════════
 
 def append_report(row):
@@ -353,6 +302,62 @@ def append_report_comment(row):
     get_worksheet("report_comments").append_row([
         row["리포트ID"], row["코멘트내용"], row["작성일시"], row["작성자"],
     ])
+
+
+# ═══════════════════════════════════════════════════════════
+# 시트 수정 (신규)
+# ═══════════════════════════════════════════════════════════
+
+def update_report(row_num, values):
+    """
+    reports 시트의 특정 행 전체 업데이트.
+    values: [리포트ID, 주간제목, 시작일, 종료일, 상태, 생성일]
+    """
+    ws = get_worksheet("reports")
+    ws.update(f"A{row_num}:F{row_num}", [values])
+
+
+def update_report_status(row_num, new_status):
+    """reports 시트의 상태 컬럼(E)만 업데이트."""
+    ws = get_worksheet("reports")
+    ws.update_cell(row_num, 5, new_status)  # E열=5
+
+
+def update_report_data_row(row_num, values):
+    """
+    report_data 시트의 특정 행 업데이트.
+    values: [리포트ID, 그룹, 캠페인ID, 노출수, 클릭수, 전환수, 비용]
+    """
+    ws = get_worksheet("report_data")
+    ws.update(f"A{row_num}:G{row_num}", [values])
+
+
+def update_report_metric_row(row_num, values):
+    """
+    report_metrics 시트의 특정 행 업데이트.
+    values: [리포트ID, 그룹, 지표종류, 지표값]
+    """
+    ws = get_worksheet("report_metrics")
+    ws.update(f"A{row_num}:D{row_num}", [values])
+
+
+def update_report_comment_row(row_num, values):
+    """
+    report_comments 시트의 특정 행 업데이트.
+    values: [리포트ID, 코멘트내용, 작성일시, 작성자]
+    """
+    ws = get_worksheet("report_comments")
+    ws.update(f"A{row_num}:D{row_num}", [values])
+
+
+# ═══════════════════════════════════════════════════════════
+# 시트 삭제 (신규)
+# ═══════════════════════════════════════════════════════════
+
+def delete_row(sheet_name, row_num):
+    """지정한 시트의 특정 행을 물리 삭제."""
+    ws = get_worksheet(sheet_name)
+    ws.delete_rows(row_num)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -470,13 +475,12 @@ def is_logged_in():
 def show_login_page():
     _, center, _ = st.columns([1, 2, 1])
     with center:
-        # 로고 표시
         if os.path.exists(LOGO_PATH):
             logo_col1, logo_col2, logo_col3 = st.columns([1, 2, 1])
             with logo_col2:
                 st.image(LOGO_PATH, width=180)
         st.markdown(f"<h1 style='text-align: center; color: {BRAND_COLOR_DARK};'>빌리프 광고 주간 리포트</h1>", unsafe_allow_html=True)
-        st.caption("<p style='text-align: center;'>로그인이 필요합니다.</p>", unsafe_allow_html=True)
+        st.caption("로그인이 필요합니다.")
         st.divider()
 
         with st.form("login_form"):
@@ -524,6 +528,10 @@ if not is_logged_in():
 if "selected_report_id" not in st.session_state:
     st.session_state.selected_report_id = None
 
+# 삭제 확인 상태 (2단계 삭제용)
+if "confirm_delete" not in st.session_state:
+    st.session_state.confirm_delete = None  # 예: "report:R001" 또는 "data:5" 형태
+
 
 # ─────────────────────────────────
 # 사이드바
@@ -560,7 +568,7 @@ if page == "📋 리포트 목록":
 
     if st.session_state.selected_report_id:
         # ═══════════════════════════════════════════
-        # 상세 조회 화면 (인쇄 최적화 페이지)
+        # 상세 조회 화면
         # ═══════════════════════════════════════════
         report_id = st.session_state.selected_report_id
 
@@ -585,42 +593,45 @@ if page == "📋 리포트 목록":
             st.stop()
 
         report_info = matched.iloc[0]
+        report_row_num = int(report_info["_row"])
 
-        # ─── 인쇄 시 숨길 UI (뒤로가기 + 인쇄 버튼) ───
+        # 삭제된 리포트에는 접근 못 하도록
+        if report_info.get("상태") == "삭제됨":
+            st.warning("⚠️ 이 리포트는 삭제된 상태입니다.")
+            if role == "admin":
+                if st.button("↩️ 복원하기"):
+                    try:
+                        update_report_status(report_row_num, "발행")
+                        st.success("복원되었습니다.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"복원 실패: {e}")
+            if st.button("⬅️ 목록으로"):
+                st.session_state.selected_report_id = None
+                st.rerun()
+            st.stop()
+
+        # ─── 상단 컨트롤 (뒤로가기 + 인쇄 안내) ───
         st.markdown('<div class="no-print">', unsafe_allow_html=True)
-        col_back, col_print = st.columns([3, 1])
+        col_back, col_info = st.columns([1, 3])
         with col_back:
             if st.button("⬅️ 목록으로 돌아가기"):
                 st.session_state.selected_report_id = None
+                st.session_state.confirm_delete = None
                 st.rerun()
-        with col_print:
-            # 인쇄 버튼 (JavaScript로 window.print() 호출)
-            st.markdown(
-                """
-                <button onclick="window.print()" style="
-                    background-color: #a99a80;
-                    color: white;
-                    border: none;
-                    padding: 8px 16px;
-                    border-radius: 6px;
-                    cursor: pointer;
-                    font-size: 14px;
-                    font-weight: 600;
-                    width: 100%;
-                ">🖨️ 인쇄 / PDF 저장</button>
-                """,
-                unsafe_allow_html=True,
-            )
+        with col_info:
+            st.info(f"💡 인쇄/PDF 저장은 **Ctrl+P** (Mac: Cmd+P) 를 눌러주세요.")
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.divider()
 
-        # ─── 브랜드 헤더 (로고 + 병원명) ───
+        # ─── 브랜드 헤더 ───
         show_report_header_with_logo()
 
         st.markdown('<hr style="border: 2px solid #a99a80; margin: 20px 0;">', unsafe_allow_html=True)
 
-        # ─── 리포트 헤더 (제목, 기간, ID) ───
+        # ─── 리포트 헤더 정보 ───
         st.markdown(f"# 📄 {report_info['주간제목']}")
         col1, col2, col3 = st.columns([2, 2, 1])
         col1.markdown(f"📅 **{report_info['시작일']} ~ {report_info['종료일']}**")
@@ -628,8 +639,91 @@ if page == "📋 리포트 목록":
         status = report_info.get("상태", "")
         if status == "발행":
             col3.success(f"✅ {status}")
+        elif status == "임시저장":
+            col3.warning(f"📝 {status}")
         else:
             col3.info(status)
+
+        # ─── 리포트 마스터 수정/삭제 (관리자만, 인쇄 시 숨김) ───
+        if role == "admin":
+            st.markdown('<div class="no-print">', unsafe_allow_html=True)
+
+            with st.expander("⚙️ 리포트 관리 (수정/삭제)"):
+                st.markdown("**리포트 정보 수정**")
+
+                with st.form(f"form_edit_report_{report_id}"):
+                    e_title = st.text_input(
+                        "주간 제목",
+                        value=report_info["주간제목"],
+                    )
+                    ec1, ec2, ec3 = st.columns(3)
+                    e_start = ec1.date_input(
+                        "시작일",
+                        value=parse_date(report_info["시작일"]) or date.today(),
+                    )
+                    e_end = ec2.date_input(
+                        "종료일",
+                        value=parse_date(report_info["종료일"]) or date.today(),
+                    )
+                    e_status = ec3.selectbox(
+                        "상태",
+                        ["발행", "임시저장"],
+                        index=0 if status == "발행" else 1,
+                    )
+
+                    if st.form_submit_button("💾 저장", type="primary"):
+                        if not e_title.strip():
+                            st.error("주간 제목은 필수입니다.")
+                        elif e_end < e_start:
+                            st.error("종료일이 시작일보다 앞입니다.")
+                        else:
+                            try:
+                                update_report(
+                                    report_row_num,
+                                    [
+                                        report_id,
+                                        e_title.strip(),
+                                        format_date(e_start),
+                                        format_date(e_end),
+                                        e_status,
+                                        report_info.get("생성일", ""),
+                                    ],
+                                )
+                                st.success("✅ 리포트 정보가 수정되었습니다.")
+                                st.cache_data.clear()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"수정 실패: {e}")
+
+                st.divider()
+                st.markdown("**⚠️ 리포트 삭제 (소프트 삭제)**")
+                st.caption("삭제하면 목록에서 사라지지만, 데이터는 유지되어 나중에 복원 가능합니다.")
+
+                delete_key = f"report:{report_id}"
+
+                if st.session_state.confirm_delete == delete_key:
+                    st.warning(f"⚠️ 정말 이 리포트를 삭제하시겠습니까?")
+                    del_col1, del_col2 = st.columns(2)
+                    if del_col1.button("🗑️ 예, 삭제합니다", type="primary",
+                                        key=f"confirm_del_report_{report_id}"):
+                        try:
+                            update_report_status(report_row_num, "삭제됨")
+                            st.session_state.confirm_delete = None
+                            st.session_state.selected_report_id = None
+                            st.cache_data.clear()
+                            st.success("리포트가 삭제되었습니다. 목록으로 이동합니다.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"삭제 실패: {e}")
+                    if del_col2.button("취소", key=f"cancel_del_report_{report_id}"):
+                        st.session_state.confirm_delete = None
+                        st.rerun()
+                else:
+                    if st.button("🗑️ 리포트 삭제", key=f"del_report_{report_id}"):
+                        st.session_state.confirm_delete = delete_key
+                        st.rerun()
+
+            st.markdown('</div>', unsafe_allow_html=True)
 
         st.divider()
 
@@ -645,6 +739,7 @@ if page == "📋 리포트 목록":
                 groups_df[["그룹", "광고매체"]], on="그룹", how="left"
             )
 
+        # ─── 매체별 요약 ───
         st.subheader("📋 매체별 요약")
 
         if this_data.empty:
@@ -664,6 +759,7 @@ if page == "📋 리포트 목록":
 
         st.divider()
 
+        # ─── 그룹별 성과 ───
         st.subheader("🎯 그룹별 성과")
 
         if not this_data.empty:
@@ -688,6 +784,7 @@ if page == "📋 리포트 목록":
 
         st.divider()
 
+        # ─── 캠페인 세부 데이터 ───
         st.subheader("🔍 캠페인 세부 데이터")
 
         if not this_data.empty:
@@ -714,8 +811,161 @@ if page == "📋 리포트 목록":
         else:
             st.caption("표시할 데이터가 없습니다.")
 
+        # ─── 캠페인 데이터 수정/삭제 (관리자만, 인쇄 시 숨김) ───
+        if role == "admin" and not this_data.empty:
+            st.markdown('<div class="no-print">', unsafe_allow_html=True)
+
+            with st.expander("⚙️ 캠페인 데이터 수정/삭제"):
+                # 각 캠페인 성과 행마다 수정/삭제 UI
+                edit_target = this_data.merge(
+                    campaigns_df[["캠페인ID", "캠페인명"]],
+                    on="캠페인ID", how="left"
+                ).sort_values("비용", ascending=False)
+
+                for _, row in edit_target.iterrows():
+                    data_row_num = int(row["_row"])
+                    camp_id = row["캠페인ID"]
+
+                    with st.container(border=True):
+                        st.markdown(
+                            f"**[{camp_id}]** {row.get('캠페인명', '')} "
+                            f"({row.get('광고매체', '')} - {row['그룹']})"
+                        )
+
+                        # 수정 폼
+                        with st.form(f"form_edit_data_{data_row_num}"):
+                            ec1, ec2, ec3, ec4 = st.columns(4)
+                            new_imp = ec1.number_input(
+                                "노출수", min_value=0, step=1,
+                                value=int(row["노출수"]) if pd.notna(row["노출수"]) else 0,
+                                key=f"imp_{data_row_num}",
+                            )
+                            new_clk = ec2.number_input(
+                                "클릭수", min_value=0, step=1,
+                                value=int(row["클릭수"]) if pd.notna(row["클릭수"]) else 0,
+                                key=f"clk_{data_row_num}",
+                            )
+                            new_conv = ec3.number_input(
+                                "전환수", min_value=0, step=1,
+                                value=int(row["전환수"]) if pd.notna(row["전환수"]) else 0,
+                                key=f"conv_{data_row_num}",
+                            )
+                            new_cost = ec4.number_input(
+                                "비용", min_value=0, step=1000,
+                                value=int(row["비용"]) if pd.notna(row["비용"]) else 0,
+                                key=f"cost_{data_row_num}",
+                            )
+
+                            btn_col1, btn_col2 = st.columns([1, 4])
+                            if btn_col1.form_submit_button("💾 저장"):
+                                try:
+                                    update_report_data_row(
+                                        data_row_num,
+                                        [
+                                            report_id, row["그룹"], camp_id,
+                                            new_imp, new_clk, new_conv, new_cost,
+                                        ],
+                                    )
+                                    st.success("수정되었습니다.")
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"수정 실패: {e}")
+
+                        # 삭제 (2단계)
+                        del_key = f"data:{data_row_num}"
+                        if st.session_state.confirm_delete == del_key:
+                            st.warning("정말 삭제하시겠습니까?")
+                            dc1, dc2 = st.columns(2)
+                            if dc1.button("🗑️ 예, 삭제", key=f"cd_data_{data_row_num}",
+                                          type="primary"):
+                                try:
+                                    delete_row("report_data", data_row_num)
+                                    st.session_state.confirm_delete = None
+                                    st.cache_data.clear()
+                                    st.success("삭제되었습니다.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"삭제 실패: {e}")
+                            if dc2.button("취소", key=f"cx_data_{data_row_num}"):
+                                st.session_state.confirm_delete = None
+                                st.rerun()
+                        else:
+                            if st.button("🗑️ 삭제", key=f"d_data_{data_row_num}"):
+                                st.session_state.confirm_delete = del_key
+                                st.rerun()
+
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # ─── 캠페인 데이터 추가 (관리자만, 인쇄 시 숨김) ───
+        if role == "admin":
+            st.markdown('<div class="no-print">', unsafe_allow_html=True)
+            with st.expander("➕ 캠페인 데이터 추가"):
+                media_df = load_media()
+
+                if media_df.empty:
+                    st.warning("media 시트에 활성 매체가 없습니다.")
+                else:
+                    add_media = st.selectbox(
+                        "광고매체", media_df["광고매체"].tolist(),
+                        key=f"add_media_{report_id}",
+                    )
+                    add_media_groups = groups_df[groups_df["광고매체"] == add_media]
+
+                    if add_media_groups.empty:
+                        st.warning(f"'{add_media}' 매체에 등록된 그룹이 없습니다.")
+                    else:
+                        add_group = st.selectbox(
+                            "그룹", add_media_groups["그룹"].tolist(),
+                            key=f"add_group_{report_id}",
+                        )
+                        active_camps = campaigns_df[
+                            campaigns_df["활성"].astype(str).str.upper() == "TRUE"
+                        ]
+                        add_group_camps = active_camps[active_camps["그룹"] == add_group]
+
+                        if add_group_camps.empty:
+                            st.warning(f"'{add_group}' 그룹에 활성 캠페인이 없습니다.")
+                        else:
+                            add_camp_options = {
+                                f"[{r['캠페인ID']}] {r['캠페인명']}": r["캠페인ID"]
+                                for _, r in add_group_camps.iterrows()
+                            }
+                            add_camp_label = st.selectbox(
+                                "캠페인", list(add_camp_options.keys()),
+                                key=f"add_camp_{report_id}",
+                            )
+                            add_camp_id = add_camp_options[add_camp_label]
+
+                            with st.form(f"form_add_data_{report_id}", clear_on_submit=True):
+                                ac1, ac2, ac3, ac4 = st.columns(4)
+                                a_imp = ac1.number_input("노출수", min_value=0, step=1)
+                                a_clk = ac2.number_input("클릭수", min_value=0, step=1)
+                                a_conv = ac3.number_input("전환수", min_value=0, step=1)
+                                a_cost = ac4.number_input("비용", min_value=0, step=1000)
+
+                                if st.form_submit_button("💾 추가", type="primary"):
+                                    try:
+                                        append_report_data_row({
+                                            "리포트ID": report_id,
+                                            "그룹": add_group,
+                                            "캠페인ID": add_camp_id,
+                                            "노출수": a_imp,
+                                            "클릭수": a_clk,
+                                            "전환수": a_conv,
+                                            "비용": a_cost,
+                                        })
+                                        st.success("추가되었습니다.")
+                                        st.cache_data.clear()
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"추가 실패: {e}")
+
+            st.markdown('</div>', unsafe_allow_html=True)
+
         st.divider()
 
+        # ─── 주요 지표 ───
         st.subheader("📌 주요 지표 (그룹 상세지표)")
 
         if this_metrics.empty:
@@ -730,34 +980,86 @@ if page == "📋 리포트 목록":
             )
             st.dataframe(pivot, use_container_width=True)
 
-        # ─── 그룹지표 입력 (인쇄 시 숨김) ───
+        # ─── 그룹지표 수정/삭제 (관리자만) ───
+        if role == "admin" and not this_metrics.empty:
+            st.markdown('<div class="no-print">', unsafe_allow_html=True)
+            with st.expander("⚙️ 그룹지표 수정/삭제"):
+                for _, row in this_metrics.sort_values(["그룹", "지표종류"]).iterrows():
+                    metric_row_num = int(row["_row"])
+
+                    with st.container(border=True):
+                        st.markdown(f"**{row['그룹']}** · {row['지표종류']}")
+
+                        with st.form(f"form_edit_metric_{metric_row_num}"):
+                            new_val = st.number_input(
+                                "지표값", min_value=0, step=1,
+                                value=int(row["지표값"]) if pd.notna(row["지표값"]) else 0,
+                                key=f"mv_{metric_row_num}",
+                            )
+                            bc1, bc2 = st.columns([1, 4])
+                            if bc1.form_submit_button("💾 저장"):
+                                try:
+                                    update_report_metric_row(
+                                        metric_row_num,
+                                        [report_id, row["그룹"], row["지표종류"], new_val],
+                                    )
+                                    st.success("수정되었습니다.")
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"수정 실패: {e}")
+
+                        del_key = f"metric:{metric_row_num}"
+                        if st.session_state.confirm_delete == del_key:
+                            st.warning("정말 삭제하시겠습니까?")
+                            dc1, dc2 = st.columns(2)
+                            if dc1.button("🗑️ 예, 삭제", key=f"cd_m_{metric_row_num}",
+                                          type="primary"):
+                                try:
+                                    delete_row("report_metrics", metric_row_num)
+                                    st.session_state.confirm_delete = None
+                                    st.cache_data.clear()
+                                    st.success("삭제되었습니다.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"삭제 실패: {e}")
+                            if dc2.button("취소", key=f"cx_m_{metric_row_num}"):
+                                st.session_state.confirm_delete = None
+                                st.rerun()
+                        else:
+                            if st.button("🗑️ 삭제", key=f"d_m_{metric_row_num}"):
+                                st.session_state.confirm_delete = del_key
+                                st.rerun()
+
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # ─── 그룹지표 추가 (관리자만) ───
         if role == "admin":
             st.markdown('<div class="no-print">', unsafe_allow_html=True)
-            with st.expander("➕ 그룹지표 입력/추가"):
+            with st.expander("➕ 그룹지표 추가"):
                 if metadata_df.empty:
                     st.warning("metadata 시트에 등록된 지표가 없습니다.")
                 else:
                     metric_groups = metadata_df["그룹"].unique().tolist()
                     sel_group = st.selectbox(
-                        "그룹", metric_groups, key=f"metric_group_{report_id}"
+                        "그룹", metric_groups, key=f"add_metric_group_{report_id}"
                     )
                     metrics = get_metrics_for_group(metadata_df, sel_group)
 
                     if not metrics:
                         st.warning("이 그룹에 등록된 지표가 없습니다.")
                     else:
-                        with st.form(f"form_metric_{report_id}", clear_on_submit=True):
+                        with st.form(f"form_add_metric_{report_id}", clear_on_submit=True):
                             st.write(f"**{sel_group}** 그룹의 지표값 입력:")
                             metric_values = {}
                             cols = st.columns(len(metrics))
                             for i, m in enumerate(metrics):
                                 metric_values[m] = cols[i].number_input(
                                     m, min_value=0, step=1,
-                                    key=f"m_val_{report_id}_{m}"
+                                    key=f"amv_{report_id}_{m}"
                                 )
 
-                            submitted = st.form_submit_button("💾 저장", type="primary")
-                            if submitted:
+                            if st.form_submit_button("💾 추가", type="primary"):
                                 try:
                                     for m, v in metric_values.items():
                                         append_report_metric({
@@ -766,45 +1068,116 @@ if page == "📋 리포트 목록":
                                             "지표종류": m,
                                             "지표값": v,
                                         })
-                                    st.success(f"✅ {sel_group} 그룹 지표 저장 완료!")
+                                    st.success(f"✅ {sel_group} 그룹 지표 추가 완료!")
                                     st.cache_data.clear()
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"저장 실패: {e}")
+
             st.markdown('</div>', unsafe_allow_html=True)
 
         st.divider()
 
+        # ─── 코멘트 ───
         st.subheader("💬 코멘트")
 
         if not this_comments.empty:
             this_comments_sorted = this_comments.sort_values("작성일시", ascending=False)
             for _, c in this_comments_sorted.iterrows():
+                comment_row_num = int(c["_row"])
+
                 with st.container(border=True):
                     header_col1, header_col2 = st.columns([3, 1])
                     header_col1.markdown(f"**✍️ {c['작성자']}**")
                     header_col2.caption(f"_{c['작성일시']}_")
                     st.write(c["코멘트내용"])
+
+                    # 관리자면 수정/삭제 (인쇄 시 숨김)
+                    if role == "admin":
+                        st.markdown('<div class="no-print">', unsafe_allow_html=True)
+
+                        # 수정 UI (편집 모드 토글)
+                        edit_key = f"edit_comment_{comment_row_num}"
+                        if st.session_state.get(edit_key):
+                            with st.form(f"form_edit_c_{comment_row_num}"):
+                                new_author = st.text_input(
+                                    "작성자", value=c["작성자"],
+                                    key=f"ea_{comment_row_num}",
+                                )
+                                new_content = st.text_area(
+                                    "코멘트 내용", value=c["코멘트내용"],
+                                    height=120,
+                                    key=f"ec_{comment_row_num}",
+                                )
+                                fc1, fc2 = st.columns(2)
+                                if fc1.form_submit_button("💾 저장"):
+                                    try:
+                                        update_report_comment_row(
+                                            comment_row_num,
+                                            [
+                                                report_id,
+                                                new_content.strip(),
+                                                c["작성일시"],
+                                                new_author or c["작성자"],
+                                            ],
+                                        )
+                                        st.session_state[edit_key] = False
+                                        st.cache_data.clear()
+                                        st.success("수정되었습니다.")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"수정 실패: {e}")
+                                if fc2.form_submit_button("취소"):
+                                    st.session_state[edit_key] = False
+                                    st.rerun()
+                        else:
+                            btn_col1, btn_col2, _ = st.columns([1, 1, 4])
+                            if btn_col1.button("✏️ 수정", key=f"ebtn_{comment_row_num}"):
+                                st.session_state[edit_key] = True
+                                st.rerun()
+
+                            del_key = f"comment:{comment_row_num}"
+                            if st.session_state.confirm_delete == del_key:
+                                st.warning("정말 삭제하시겠습니까?")
+                                dc1, dc2 = st.columns(2)
+                                if dc1.button("🗑️ 예", key=f"cd_c_{comment_row_num}",
+                                              type="primary"):
+                                    try:
+                                        delete_row("report_comments", comment_row_num)
+                                        st.session_state.confirm_delete = None
+                                        st.cache_data.clear()
+                                        st.success("삭제되었습니다.")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"삭제 실패: {e}")
+                                if dc2.button("취소", key=f"cx_c_{comment_row_num}"):
+                                    st.session_state.confirm_delete = None
+                                    st.rerun()
+                            else:
+                                if btn_col2.button("🗑️", key=f"dbtn_{comment_row_num}"):
+                                    st.session_state.confirm_delete = del_key
+                                    st.rerun()
+
+                        st.markdown('</div>', unsafe_allow_html=True)
         else:
             st.caption("아직 코멘트가 없습니다.")
 
-        # ─── 코멘트 입력 (인쇄 시 숨김) ───
+        # ─── 새 코멘트 작성 (관리자만) ───
         if role == "admin":
             st.markdown('<div class="no-print">', unsafe_allow_html=True)
             with st.expander("➕ 새 코멘트 작성"):
-                with st.form(f"form_comment_{report_id}", clear_on_submit=True):
+                with st.form(f"form_add_comment_{report_id}", clear_on_submit=True):
                     author = st.text_input(
                         "작성자", value=st.session_state.user_name,
-                        key=f"c_author_{report_id}",
+                        key=f"nc_author_{report_id}",
                     )
                     content = st.text_area(
                         "코멘트 내용",
                         placeholder="예: 이번 주 영미권 CTR이 전주 대비 2배 상승...",
                         height=150,
-                        key=f"c_content_{report_id}",
+                        key=f"nc_content_{report_id}",
                     )
-                    submitted = st.form_submit_button("💾 저장", type="primary")
-                    if submitted:
+                    if st.form_submit_button("💾 저장", type="primary"):
                         if not content.strip():
                             st.error("코멘트 내용은 필수입니다.")
                         else:
@@ -821,6 +1194,7 @@ if page == "📋 리포트 목록":
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"저장 실패: {e}")
+
             st.markdown('</div>', unsafe_allow_html=True)
 
     else:
@@ -836,8 +1210,18 @@ if page == "📋 리포트 목록":
             st.error(f"리포트 로드 실패: {e}")
             st.stop()
 
+        # 삭제된 리포트 필터링 옵션
+        show_deleted = False
+        if role == "admin":
+            show_deleted = st.checkbox("🗑️ 삭제된 리포트 포함 보기", value=False)
+
+        # 삭제되지 않은 리포트만 (또는 옵션에 따라 전체)
+        if not reports_df.empty and "상태" in reports_df.columns:
+            if not show_deleted:
+                reports_df = reports_df[reports_df["상태"] != "삭제됨"]
+
         if reports_df.empty:
-            st.info("📌 아직 작성된 리포트가 없습니다.")
+            st.info("📌 표시할 리포트가 없습니다.")
             if role == "admin":
                 st.caption("좌측 '➕ 새 리포트 작성' 메뉴에서 첫 리포트를 만들어보세요.")
         else:
@@ -863,11 +1247,16 @@ if page == "📋 리포트 목록":
                     status = row.get("상태", "")
                     if status == "발행":
                         col3.success(f"✅ {status}")
+                    elif status == "임시저장":
+                        col3.warning(f"📝 {status}")
+                    elif status == "삭제됨":
+                        col3.error(f"🗑️ {status}")
                     else:
                         col3.info(status)
 
                     if col4.button("🔍 상세보기", key=f"detail_{row['리포트ID']}"):
                         st.session_state.selected_report_id = row["리포트ID"]
+                        st.session_state.confirm_delete = None
                         st.rerun()
 
 
@@ -957,7 +1346,7 @@ elif page == "➕ 새 리포트 작성":
         )
 
         col_btn1, col_btn2 = st.columns([1, 3])
-        if col_btn1.button("✅ 작성 완료 (목록으로)"):
+        if col_btn1.button("✅ 작성 완료 (상세 페이지로)"):
             report_id = st.session_state.current_report_id
             for key in ["current_report_id", "current_report_title",
                         "current_report_start", "current_report_end"]:
@@ -1089,8 +1478,12 @@ elif page == "🔄 리포트 비교":
         st.error(f"데이터 로드 실패: {e}")
         st.stop()
 
+    # 삭제된 리포트는 비교에서 제외
+    if not reports_df.empty and "상태" in reports_df.columns:
+        reports_df = reports_df[reports_df["상태"] != "삭제됨"]
+
     if reports_df.empty or len(reports_df) < 2:
-        st.info("비교하려면 최소 2개의 리포트가 필요합니다.")
+        st.info("비교하려면 최소 2개의 활성 리포트가 필요합니다.")
         st.stop()
 
     report_options = {
